@@ -9,7 +9,9 @@
 /*
 	The Storm DDA system (SFileDda) is a small audio streaming system used for music and other sounds that are streamed (decoded on the fly). The system essentially consists of a streaming thread which asynchronously reads data from the files and copies it into the IDirectSoundBuffers. No decoding is necessary because the file is, after decompression by the MPQ decompression code, in PCM format, directly playable by the sound card once placed in the buffer. As such, the system is a fairly thin wrapper around DirectSound.
 	
-	The DDA system is initialized with an IDirectSound allocated and initialized by the host game. All DDA APIs refer to sounds by their SFile handle, which must be opened previously either from disk or from MPQ using the Storm SFile functions; reference-counting is used to ensure that SFileCloseFile does not close a file that is still playing (or, unrelated, still has outstanding asynchronous I/O requests) - the DDA system holds one reference on the file until the SFileDdaEnd function is called on it. Streaming IDirectSoundBuffers are either created by SFileDdaBegin/Ex or passed as parameters; if passed as parameters, the game may update parameters of the stream such as volume directly through the IDirectSoundBuffer interface, rather than through the equivalent DDA functions such as SFileDdaSetVolume. Most other flags and parameters (volume, panning, etc.) are specified in the native format of DirectSound.
+	The DDA system is initialized with an IDirectSound allocated and initialized by the host game. All DDA API functions refer to sounds by their SFile handle, which must be opened previously either from disk or from MPQ using the Storm SFile functions, and most flags and parameters (volume, panning, etc.) are specified in the native format of DirectSound. Reference-counting is used to ensure that SFileCloseFile does not close a file that is still playing (or, unrelated, still has outstanding asynchronous I/O requests) - the DDA system holds one reference on the file until the SFileDdaEnd function is called on it.
+	
+	IDirectSoundBuffers used to stream the sound are either created by SFileDdaBegin/Ex or passed as a parameter to SFileDdaBeginEx. If passed as a parameter, the game may update parameters of the stream such as volume directly through the IDirectSoundBuffer interface, rather than through the equivalent DDA functions such as SFileDdaSetVolume, which saves the overhead of locking the DDA mutex and looking up the IDirectSoundBuffer corresponding to the referenced SFile handle; Diablo II has also been observed to call GetStatus to determine if the sound is yet/still playing. To support this, we must emulate game-provided IDirectSoundBuffers by synchronizing the state between the buffer and the actual sound being played.
 
 	We hook the DirectSoundCreate and DirectSoundCreate8 functions to allow us to initialize the FMOD sound system and get the IDirectSound interface that FMOD created; at the same time we hook the v-table functions for Release and CreateSoundBuffer. We hook Release to allow us to destroy the sound system when the game is done with it (as we can't really clean it up in TerminatePlugin or DLL_PROCESS_DETACH); we hook CreateSoundBuffer simply so that we can hook IDirectSoundBuffer::SetFormat, which we'll need to set the primary buffer to 44 khz.
 
@@ -22,7 +24,7 @@
 #include "stdafx.h"
 
 // Define the basic MPQDraft plugin constants, then import the plugin template
-#define BUILD_STRING "ThunderGraft v2009.09.22.1"
+#define BUILD_STRING "ThunderGraft v2011.07.25.1"
 #ifdef _DEBUG
 #define PLUGIN_ID 0x3c92af17
 #define PLUGIN_NAME BUILD_STRING" Debug Build"
@@ -96,6 +98,9 @@ struct PLAYINGSOUND
 	// The DDA system holds a reference to the currently playing file until SFileDdaEnd is called; this means that the file will not be freed when SFileCloseFile is called, if the DDA system still has a pointer to it. Since we can't access the reference count (that's a game-dependent internal field of the HSFILE), we have to emulate it by deferring the call to SFileCloseFile until we're done playing.
 	BOOL bCloseOnStop;
 
+	// Whether the sounds is still playing or has stopped. This is used to determine when a sound has just stopped.
+	BOOL bIsPlaying;
+
 	// The IDirectSoundBuffer we will get volume, pan, and frequency settings from, if it exists
 	IDirectSoundBuffer *lpSoundBuffer;
 
@@ -117,6 +122,7 @@ struct PLAYINGSOUND
 
 		this->bGlobal = bGlobal;
 		this->bCloseOnStop = FALSE;
+		this->bIsPlaying = TRUE;
 
 		lpSoundBuffer = NULL;
 	}
@@ -218,7 +224,7 @@ private:
 	BOOL PatchStarEditFunctions();
 
 	// Update list functions
-	void UpdateSound(IN PLAYINGSOUND &playingSound, IN BOOL bActivated);
+	void UpdateSound(IN HANDLE hSFile, IN PLAYINGSOUND &playingSound, IN BOOL bActivated);
 
 	BOOL CreateUpdateThread();
 	static DWORD WINAPI UpdateThread(IN CThunderGraftPlugin *pThis);

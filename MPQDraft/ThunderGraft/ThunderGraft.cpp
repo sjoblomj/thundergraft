@@ -117,21 +117,36 @@ FARPROC CThunderGraftPlugin::GetPatchedFunction(IN LPVOID lpObject, IN DWORD iTa
 	return (FARPROC)itFunction->second;
 }
 
-void CThunderGraftPlugin::UpdateSound(IN PLAYINGSOUND &sound, IN BOOL bActivated)
+void CThunderGraftPlugin::UpdateSound(IN HANDLE hSFile, IN PLAYINGSOUND &sound, IN BOOL bActivated)
 {
-	QDebugWriteEntry("UpdateSound(0x%X, %d)", &sound, bActivated);
+	QDebugWriteEntry("UpdateSound(0x%X, 0x%X, %d)", hSFile, &sound, bActivated);
 
 	assert(m_bSSCreated);
+
+	if (!sound.bIsPlaying)
+		return;
 
 	// Verify that the sound is still playing and hasn't been reused by another sound. Note that performing this check before setting all the stuff is actually a race condition, but there's really no way around it.
 	bool bChannelPlaying = false;
 	Channel *lpChannel = sound.lpChannel;
 	Sound *lpSound;
-	if (lpChannel->isPlaying(&bChannelPlaying) != FMOD_OK ||
-		!bChannelPlaying ||
-		lpChannel->getCurrentSound(&lpSound) != FMOD_OK || 
-		lpSound != sound.lpSound)
+	bool bSoundPlaying = (lpChannel->isPlaying(&bChannelPlaying) == FMOD_OK &&
+		bChannelPlaying &&
+		lpChannel->getCurrentSound(&lpSound) == FMOD_OK &&
+		lpSound == sound.lpSound);
+
+	if (!bSoundPlaying)
+	{
+		// The sound just stopped playing. Update our state as necessary. If we have a IDirectSoundBuffer, stop it.
+		QDebugWriteEntry("UpdateSound : Sound has completed");
+
+		if (sound.lpSoundBuffer)
+			sound.lpSoundBuffer->Stop();
+
+		sound.bIsPlaying = FALSE;
+
 		return;
+	}
 
 	if (sound.lpSoundBuffer)
 	{
@@ -228,7 +243,7 @@ DWORD WINAPI CThunderGraftPlugin::UpdateThread(IN CThunderGraftPlugin *pThis)
 
 			PLAYINGSOUND &update = itUpdate->second;
 
-			pThis->UpdateSound(update, bActivated);
+			pThis->UpdateSound(itUpdate->first, update, bActivated);
 
 			itUpdate = itNextUpdate;
 		}
@@ -236,7 +251,7 @@ DWORD WINAPI CThunderGraftPlugin::UpdateThread(IN CThunderGraftPlugin *pThis)
 		pThis->m_bWasActivated = bActivated;
 
 		LeaveCriticalSection(&pThis->m_csThreadLock);
-	} while (WaitForSingleObject(pThis->m_hKillUpdateThread, 50) == WAIT_TIMEOUT);
+	} while (WaitForSingleObject(pThis->m_hKillUpdateThread, 30) == WAIT_TIMEOUT);
 
 	QDebugWriteEntry("UpdateThread : Terminating update thread", pThis);
 
@@ -264,9 +279,13 @@ BOOL CThunderGraftPlugin::PlaySound(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD
 		nBufferSamples = dwBufferBytes / nSampleBytes;
 	BOOL bGlobal = FALSE;
 
-	// If an IDirectSoundBuffer is provided, Storm uses that instead of creating its own buffer. While we can't use the buffer we get passed, we should adopt the buffer size and flags/caps from it. However, if a volume and pan position are also provided, Storm will update the buffer with those settings.
+	// If an IDirectSoundBuffer is provided, Storm uses that instead of creating its own buffer. While we can't use the buffer we get passed to actually play the music, we have to make Storm think we're using it. 	
 	if (lpSoundBuffer)
 	{
+		// To start with, make sure it's stopped
+		lpSoundBuffer->Stop();
+
+		// We need to adopt the buffer size and flags/caps from it for our sound. However, if a volume and pan position are also provided, Storm will update the buffer with those settings, instead.
 		if (nVolume == SFILE_DDA_DEFAULT)
 			lpSoundBuffer->GetVolume(&nVolume);
 		else
@@ -288,17 +307,32 @@ BOOL CThunderGraftPlugin::PlaySound(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD
 		DWORD nBytesWritten;
 
 		bufferCaps.dwSize = sizeof(bufferCaps);
-		if (SUCCEEDED(lpSoundBuffer->GetCaps(&bufferCaps)) &&
-			SUCCEEDED(lpSoundBuffer->GetFormat(&bufferFormat, sizeof(bufferFormat), &nBytesWritten)) &&
-			nBytesWritten >= sizeof(bufferFormat))
+		if (FAILED(lpSoundBuffer->GetCaps(&bufferCaps)) ||
+			FAILED(lpSoundBuffer->GetFormat(&bufferFormat, sizeof(bufferFormat), &nBytesWritten)) ||
+			nBytesWritten < sizeof(bufferFormat))
 		{
-			bGlobal = (bufferCaps.dwFlags & DSBCAPS_GLOBALFOCUS);
+			QDebugWriteEntry("PlaySound : GetCaps or GetFormat failed!");
+			return FALSE;
+		}
 
-			nSampleBytes = (bufferFormat.wBitsPerSample / 8) * bufferFormat.nChannels;
-			nBufferSamples = bufferCaps.dwBufferBytes / nSampleBytes;
-			nBufferFreq = bufferFormat.nSamplesPerSec;
+		bGlobal = (bufferCaps.dwFlags & DSBCAPS_GLOBALFOCUS) != 0;
 
-			QDebugWriteEntry("PlaySound : IDirectSoundBuffer caps 0x%X, buffer size %u bytes, %u samples per second, %u bits per sample, %u channels", bufferCaps.dwFlags, bufferCaps.dwBufferBytes, bufferFormat.nSamplesPerSec, bufferFormat.wBitsPerSample, bufferFormat.nChannels);
+		nSampleBytes = (bufferFormat.wBitsPerSample / 8) * bufferFormat.nChannels;
+		nBufferSamples = bufferCaps.dwBufferBytes / nSampleBytes;
+		nBufferFreq = bufferFormat.nSamplesPerSec;
+
+		QDebugWriteEntry("PlaySound : IDirectSoundBuffer format 0x%X, caps 0x%X, buffer size %u bytes, %u samples per second, %u bits per sample, %u channels", bufferFormat.wFormatTag, bufferCaps.dwFlags, bufferCaps.dwBufferBytes, bufferFormat.nSamplesPerSec, bufferFormat.wBitsPerSample, bufferFormat.nChannels);
+
+		// We have no guarantee that the buffer that was given to us is empty. Since we want to play it at normal volume, we need to ensure that it's silence. So we'll lock it and "zero" it here.
+		LPVOID lpBuffer = NULL;
+		DWORD nBufferSize = 0;
+		if (SUCCEEDED(lpSoundBuffer->Lock(0, 0, &lpBuffer, &nBufferSize, NULL, 0, DSBLOCK_ENTIREBUFFER)))
+		{
+			// We've got the buffer. Depending on whether it's 8-bit or 16-bit PCM, we'll need to fill it with different values. 8-bit PCM is unsigned, so we need to fill it with 0x80; 16-bit PCM is signed, so we need to fill it with 0x0000.
+			BYTE zero = (bufferFormat.wBitsPerSample == 8) ? 0x80 : 0;
+			memset(lpBuffer, zero, nBufferSize);
+
+			lpSoundBuffer->Unlock(lpBuffer, nBufferSize, NULL, 0);
 		}
 	}
 
@@ -366,9 +400,11 @@ BOOL CThunderGraftPlugin::PlaySound(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD
 
 			if (lpSoundBuffer)
 			{
-				// Done here for one less thing to roll back if the push fails
+				// Finally, note that we're storing a reference to the IDirectSoundBuffer, and start "playing" it; done here for one less thing to roll back if the push fails. Note that as a streaming audio system, DDA always works with looping buffers, regardless of whether the sound itself is looped.
 				ULONG nRefCount = lpSoundBuffer->AddRef();
-				QDebugWriteEntry("PlaySound : Buffer AddRef returned %u", nRefCount);
+				HRESULT hResult = lpSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
+
+				QDebugWriteEntry("PlaySound : Buffer AddRef returned %u, Play returned 0x%X", nRefCount, hResult);
 			}
 
 			return TRUE;
@@ -395,12 +431,14 @@ BOOL CThunderGraftPlugin::StopSound(IN HANDLE hSFile)
 	if (itSound == m_playingSoundMap.end())
 		return FALSE;
 
-	// If necessary, release our pointer to the IDirectSoundBuffer
+	// If necessary, stop the IDirectSoundBuffer and release our pointer
 	PLAYINGSOUND *lpSound = &itSound->second;
 	if (lpSound->lpSoundBuffer)
 	{
+		HRESULT hResult = lpSound->lpSoundBuffer->Stop();
 		ULONG nRefCount = lpSound->lpSoundBuffer->Release();
-		QDebugWriteEntry("StopSound : Buffer Release returned %u", nRefCount);
+
+		QDebugWriteEntry("StopSound : Buffer Stop returned 0x%X, Release returned %u", hResult, nRefCount);
 	}
 
 	// Destroy the sound and close the file, if necessary
@@ -796,7 +834,7 @@ BOOL CThunderGraftPlugin::ConfigureSoundSystem(OPTIONAL IN LPCGUID lpGUID)
 	// Set the default speaker mode for the driver
 	FMOD_CAPS driverCaps;
 	FMOD_SPEAKERMODE speakerMode;
-	result = m_lpSoundSystem->getDriverCaps(nDefDriver, &driverCaps, 0, 0, &speakerMode);
+	result = m_lpSoundSystem->getDriverCaps(nDefDriver, &driverCaps, NULL, &speakerMode);
 	QDebugWriteEntry("ConfigureSoundSystem : getDriverCaps returned %d, caps %u, speaker mode %u", result, driverCaps, speakerMode);
 	if (result != FMOD_OK)
 		return FALSE;

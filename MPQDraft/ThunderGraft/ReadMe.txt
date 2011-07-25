@@ -32,12 +32,15 @@ ThunderGraft targets the Storm DDA system (SFileDda). This system handles stream
 
 ThunderGraft works by simply replacing this system with its own (FMOD Ex). This involves hooking all calls to DDA functions, as well as a few other things. A DirectSound system is created by the game and then passed to SFileDdaInitialize; as FMOD Ex requires that it create the DirectSound system, DirectSoundCreate must be hooked as well. Finally, ThunderGraft must hook several functions in StarEdit related to sound importing in order to allow the importing of non-WAV files and determination of the length of imported sounds.
 
-One optional feature of the DDA system is the ability for the caller (the game) to supply its own DirectSound buffer for use in streaming. This not only makes the DDA system use the settings on the buffer, but it also allows the game to modify things such as volume without calling the corresponding DDA function (IDirectSoundBuffer::SetVolume rather than SFileDdaSetVolume). This is emulated by watching for updates to buffers associated with sounds currently playing, and updating the actual playing sounds based on the new values set on the buffer.
+One optional feature of the DDA system is the ability for the caller (the game) to supply its own DirectSound buffer for use in streaming. This not only makes the DDA system use the settings on the buffer, but it also allows the game to modify things such as volume or to get the play state without calling the corresponding DDA function (e.g. IDirectSoundBuffer::SetVolume rather than SFileDdaSetVolume). This is emulated by watching for changes between the IDirectSoundBuffer and playing sound, and updating both as necessary.
 
 For further information, see the source code.
 
 Update History
 --------------
+
+2011.7.25.1:
+- Fixed the problem where dialogue text in Diablo II would not properly appear when dialogue was set to audio and text
 
 2009.9.22.1:
 - Fixed a minor but annoying crash that occurs on game exit on some computers
