@@ -1,6 +1,6 @@
 # ThunderGraft
 
-An [MPQDraft](http://sourceforge.net/projects/mpqdraft/) plugin that lets Diablo, Diablo II, StarCraft and Warcraft II: Battle.net Edition play music in MP3, Ogg Vorbis and FLAC, as well as WAV. See [`MPQDraft/ThunderGraft/ReadMe.txt`](MPQDraft/ThunderGraft/ReadMe.txt) for what it does and how to use it.
+An [MPQDraft](http://sourceforge.net/projects/mpqdraft/) plugin that lets Diablo, Diablo II, StarCraft and Warcraft II: Battle.net Edition play music in MP3, Ogg Vorbis and FLAC, as well as WAV. See [`MPQDraft/ThunderGraft/README.md`](MPQDraft/ThunderGraft/README.md) for what it does and how to use it.
 
 The plugin is a 32-bit Windows DLL, `ThunderGraft.qdp`, as the games and MPQDraft are 32-bit Windows programs. It is built with GCC (mingw-w64), normally cross-compiled on Linux, and only depends on open-source code: [miniaudio](https://miniaud.io) and stb_vorbis, which are compiled into the plugin. See [`third_party/README.md`](third_party/README.md).
 
