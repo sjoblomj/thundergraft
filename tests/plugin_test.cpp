@@ -125,7 +125,15 @@ TEST_CASE("The plugin identifies itself")
 
 	char szName[MPQDRAFT_MAX_PLUGIN_NAME] = "";
 	REQUIRE(Plugin()->GetPluginName(szName, sizeof(szName)));
-	CHECK(strncmp(szName, "ThunderGraft", 12) == 0);
+#ifdef THUNDERGRAFT_VERSION
+	std::string strExpected = "ThunderGraft v" THUNDERGRAFT_VERSION;
+#else
+	std::string strExpected = "ThunderGraft development build";
+#endif
+#ifdef _DEBUG
+	strExpected += " Debug Build";
+#endif
+	CHECK(std::string(szName) == strExpected);
 
 	SUBCASE("Names are truncated to the buffer")
 	{

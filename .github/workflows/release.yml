@@ -28,7 +28,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --preset mingw-release
+          cmake --preset mingw-release -DTHUNDERGRAFT_VERSION="${GITHUB_REF_NAME#v}"
           cmake --build --preset mingw-release --parallel
 
       - name: Test

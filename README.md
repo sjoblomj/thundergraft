@@ -64,7 +64,7 @@ git tag 2026.10.12.1
 git push origin 2026.10.12.1
 ```
 
-The version the plugin reports to MPQDraft is `BUILD_STRING` in `src/ThunderGraft.h`, which isn't taken from the tag.
+The plugin reports its version to MPQDraft as "ThunderGraft v<version>". The workflow sets it from the tag, without a leading `v`, through the `THUNDERGRAFT_VERSION` CMake variable; builds without it call themselves "ThunderGraft development build". To build a release locally, pass it yourself: `cmake --preset mingw-release -DTHUNDERGRAFT_VERSION=2026.10.12.1`.
 
 ## Debugging
 

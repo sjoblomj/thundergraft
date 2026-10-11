@@ -111,6 +111,9 @@ if(WIN32)
 	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import doctest)
 	target_link_options(plugin_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	target_compile_definitions(plugin_tests PRIVATE TG_PLUGIN_FILE="$<TARGET_FILE_NAME:ThunderGraft>")
+	if(THUNDERGRAFT_VERSION)
+		target_compile_definitions(plugin_tests PRIVATE THUNDERGRAFT_VERSION="${THUNDERGRAFT_VERSION}")
+	endif()
 	add_dependencies(plugin_tests ThunderGraft test_fixtures)
 
 	# Without an audio engine: everything is forwarded to Storm

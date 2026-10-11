@@ -18,8 +18,7 @@ What's left, in order of importance:
 1. Try it with the real MPQDraft and games (see the manual test matrix below).
    In particular, check early that MSVC-built MPQDraft can call the GCC-built
    plugin interface.
-2. Bump `BUILD_STRING` for a release.
-3. CI on every push, and the other items under "Later". Tagged releases
+2. CI on every push, and the other items under "Later". Tagged releases
    are built, tested and published by `.github/workflows/release.yml`.
 
 ## Decisions
@@ -88,7 +87,9 @@ What's left, in order of importance:
 - [x] Clean-ups: `%p` in logs, `NOMINMAX`, dead code removed (`ShutDown()`, the
       disabled `LoadLibraryA` hook). `QDebug` bugs fixed on the way: inverted
       handle checks in the close functions, unbounded `vsprintf`.
-- [ ] Bump `BUILD_STRING`. Keep `PLUGIN_ID` unless we find a reason to change it.
+- [x] `BUILD_STRING` comes from the `THUNDERGRAFT_VERSION` CMake variable, which
+      the release workflow sets from the tag. Keep `PLUGIN_ID` unless we find a
+      reason to change it.
 
 Behaviour changes in the DDA emulation, deliberate:
 - `SFileDdaSetVolume` succeeds on finished sounds, as the original comments say

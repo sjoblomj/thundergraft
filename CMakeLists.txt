@@ -8,6 +8,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(THUNDERGRAFT_BUILD_TESTS "Build the tests" ON)
 
+# The version the plugin reports to MPQDraft. Releases are built with the tag;
+# without one, the plugin says it is a development build.
+set(THUNDERGRAFT_VERSION "" CACHE STRING "Version the plugin reports, such as 2026.10.12.1")
+# MPQDraft has room for 63 characters, including "ThunderGraft v" and " Debug Build"
+string(LENGTH "${THUNDERGRAFT_VERSION}" TG_VERSION_LENGTH)
+if(TG_VERSION_LENGTH GREATER 37)
+	message(FATAL_ERROR "THUNDERGRAFT_VERSION is too long for MPQDraft's plugin name: ${THUNDERGRAFT_VERSION}")
+endif()
+
 # Put every executable and DLL in one directory, so test programs find the
 # plugin and the fake Storm.dll next to themselves.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -94,6 +103,9 @@ if(WIN32)
 	)
 	target_link_libraries(ThunderGraft PRIVATE thundergraft_core psapi)
 	target_compile_definitions(ThunderGraft PRIVATE ${TG_PLUGIN_DEFINITIONS})
+	if(THUNDERGRAFT_VERSION)
+		target_compile_definitions(ThunderGraft PRIVATE THUNDERGRAFT_VERSION="${THUNDERGRAFT_VERSION}")
+	endif()
 	target_link_options(ThunderGraft PRIVATE
 		# The plugin is injected into games and extracted from SEMPQs on its
 		# own, so it must not depend on the MinGW runtime DLLs.

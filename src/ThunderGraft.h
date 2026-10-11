@@ -26,7 +26,12 @@
 #include "Storm.h"
 
 // Define the basic MPQDraft plugin constants, then import the plugin template
-#define BUILD_STRING "ThunderGraft v2011.07.25.1"
+// The version comes from the build; see THUNDERGRAFT_VERSION in CMakeLists.txt
+#ifdef THUNDERGRAFT_VERSION
+#define BUILD_STRING "ThunderGraft v" THUNDERGRAFT_VERSION
+#else
+#define BUILD_STRING "ThunderGraft development build"
+#endif
 #ifdef _DEBUG
 #define PLUGIN_ID 0x3c92af17
 #define PLUGIN_NAME BUILD_STRING" Debug Build"
