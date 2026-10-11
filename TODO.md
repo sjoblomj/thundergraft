@@ -19,14 +19,15 @@ What's left, in order of importance:
    In particular, check early that MSVC-built MPQDraft can call the GCC-built
    plugin interface.
 2. Bump `BUILD_STRING` for a release.
-3. Opus, CI, and the other items under "Later".
+3. CI, and the other items under "Later".
 
 ## Decisions
 
 - **Toolchain:** mingw-w64 (i686) + CMake.
 - **Audio:** miniaudio, vendored unmodified, playing on its own output device
   instead of the game's DirectSound.
-- **Formats:** WAV, MP3, Ogg Vorbis, FLAC. Opus later.
+- **Formats:** WAV, MP3, Ogg Vorbis, FLAC. Opus is not planned; it can be added
+  later if needed (see "Not planned" below).
   Compared with FMOD Ex we drop WMA, AIFF, MP2, VAG, tracker formats and MIDI.
 - **StarEdit integration:** removed entirely. Non-WAV StarCraft map trigger
   sounds still play in-game, since they go through the same Storm streaming
@@ -188,17 +189,25 @@ Behaviour changes in the DDA emulation, deliberate:
     - muting on alt-tab
     - clean exit, with no crash (cf. the 2009.9.22 fix)
     - running alongside other plugins
-- [x] Docs: `README.md` with build and test instructions; `ReadMe.txt` updated
+- [x] Docs: `README.md` with build and test instructions; the user readme
+      (now `MPQDraft/ThunderGraft/README.md`) updated
       (formats, no `fmodex.dll`, StarEdit removed, credits, licenses, changelog).
 
 ## Later
 
-- [ ] Opus, through miniaudio's `extras/decoders/libopus`:
-  - libopus and libopusfile (both BSD), cross-built through CMake.
-  - Length: the granule of the last page minus the pre-skip, at 48 kHz.
-    `OggLength.cpp` would need to recognize `OpusHead`.
-- [ ] Once Opus brings in libogg, consider libvorbis instead of stb_vorbis. It is
-      more battle-tested and reports Vorbis length directly.
 - [ ] A fake Storm backed by StormLib (MIT), to test files read from real MPQs.
 - [ ] CI: build, native tests and Wine tests on every push.
 - [ ] The MSVC build, if anyone wants it.
+
+## Not planned
+
+Opus support, decided against for now. If it's ever wanted:
+- miniaudio's `extras/decoders/libopus` decoder, registered through the resource
+  manager's `ppCustomDecodingBackendVTables` in `MiniaudioEngine.cpp`.
+- libogg, libopus and libopusfile (all BSD), cross-built as static libraries;
+  opusfile with `OP_DISABLE_HTTP`. opusfile looks its dependencies up with
+  `find_package()`, which needs `FetchContent` package overrides or wrapper
+  targets when building all three in one project.
+- The length comes from opusfile (`op_pcm_total`, through seekable callbacks),
+  so `OggLength.cpp` isn't involved. Opus always decodes at 48 kHz.
+- With libogg in, replacing stb_vorbis with libvorbis becomes cheap.
