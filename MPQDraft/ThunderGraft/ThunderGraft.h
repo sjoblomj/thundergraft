@@ -151,10 +151,6 @@ private:
 	HMODULE m_hDirectSound;
 	HMODULE m_hFMOD;
 	HMODULE m_hStorm;
-	HMODULE m_hStarEdit;	// May not exist
-
-	// Used to determine which method to patch StarEdit
-	DWORD m_dwSETimeStamp;
 
 	// The various functions we'll patch/need internally. Some of these are set by GetFunctionPointers, some in PatchFunctions.
 	LoadLibraryAPtr LoadLibraryA;
@@ -218,10 +214,6 @@ private:
 	FARPROC GetPatchedFunction(IN LPVOID lpObject, IN DWORD iTableEntry);
 	BOOL PatchIDirectSound(IN IDirectSound *lpDirectSound);
 	BOOL PatchIDirectSoundBuffer(IN IDirectSoundBuffer *lpBuffer);
-
-	// StarEdit-related functions
-	BOOL GetStarEditVersion();
-	BOOL PatchStarEditFunctions();
 
 	// Update list functions
 	void UpdateSound(IN HANDLE hSFile, IN PLAYINGSOUND &playingSound, IN BOOL bActivated);
@@ -352,11 +344,6 @@ private:
 	static ULONG WINAPI PatchDirectSoundRelease(IN IDirectSound *lpDirectSound);
 	static HRESULT WINAPI PatchCreateSoundBuffer(IN IDirectSound *lpDirectSound, IN LPCDSBUFFERDESC lpBufferDesc, OUT LPDIRECTSOUNDBUFFER *lpBuffer, OPTIONAL IN LPUNKNOWN lpUnkOuter);
 	static HRESULT WINAPI PatchBufferSetFormat(IN IDirectSoundBuffer *lpBuffer, IN LPCWAVEFORMATEX lpFormat);
-
-	// StarEdit intercepts
-	static BOOL WINAPI GetOpenSoundFileNameA(IN LPOPENFILENAME lpofn);
-
-	static DWORD __fastcall GetSoundLengthFromIndex(IN DWORD iSound);
 
 public:
 	CThunderGraftPlugin();

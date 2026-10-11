@@ -142,18 +142,6 @@ BOOL WINAPI CThunderGraftPlugin::InitializePlugin(IN IMPQDraftServer *lpMPQDraft
 	if (!PatchFunctionsInModule(m_hHostModule, "Storm.dll"))
 		return FALSE;
 
-	// Is this StarEdit?
-	if (m_hStarEdit)
-	{
-		// See if it's a supported version; unlike game patching, StarEdit patching is version-specific.
-		if (!GetStarEditVersion() ||
-			!PatchStarEditFunctions())
-		{
-			MessageBox(NULL, "Fatal Error: Your version of StarEdit is not compatible with ThunderGraft. ThunderGraft supports at least StarCraft 1.08-1.16.1. StarEdit will now close.", PLUGIN_NAME, MB_ICONSTOP | MB_OK);
-			return FALSE;
-		}
-	}
-
 	EnterCriticalSection(&m_csThreadLock);
 
 	// Create the update thread. Essentially the only reason this needs to be in the critical section is that this code causes a race condition reading/writing m_bInitialize> If the update thread got run before m_bInitialize is set, stuff could assert, and that would suck.

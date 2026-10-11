@@ -507,10 +507,6 @@ BOOL CThunderGraftPlugin::GetFunctionPointers()
 	bRetVal = PatchImportEntry(m_hHostModule, m_hStorm, NULL, 0x10F, NULL, &SFileSetFilePointer);
 	QDebugWriteEntry("GetFunctionPointers : PatchImportEntry returned %d", bRetVal);
 
-	// See if StarEdit is running
-	m_hStarEdit = GetModuleHandle("StarEdit.exe");
-	QDebugWriteEntry("GetFunctionPointers : StarEdit.exe found at 0x%X", m_hStarEdit);
-
 	// Make sure we have everything we need
 	if (!SFileGetFileSize || !SFileReadFile || !SFileSetFilePointer)
 		return FALSE;
