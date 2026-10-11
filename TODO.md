@@ -67,7 +67,7 @@ What's left, in order of importance:
 - [x] Code that goes into the plugin compiles with `_WIN32_WINNT=0x0501`. Test
       programs don't, as they use `std::thread`, which needs Vista with GCC.
 - [x] No `std::thread`/`std::mutex` in plugin code.
-- [ ] Nice to have: the same CMake project also builds with MSVC on Windows.
+- Building with MSVC: not planned; see "Not planned" below.
 
 ### Source changes
 
@@ -197,7 +197,6 @@ Behaviour changes in the DDA emulation, deliberate:
 
 - [ ] A fake Storm backed by StormLib (MIT), to test files read from real MPQs.
 - [ ] CI: build, native tests and Wine tests on every push.
-- [ ] The MSVC build, if anyone wants it.
 
 ## Not planned
 
@@ -211,3 +210,15 @@ Opus support, decided against for now. If it's ever wanted:
 - The length comes from opusfile (`op_pcm_total`, through seekable callbacks),
   so `OggLength.cpp` isn't involved. Opus always decodes at 48 kHz.
 - With libogg in, replacing stb_vorbis with libvorbis becomes cheap.
+
+Building with MSVC (Visual C++), decided against: it's a proprietary
+toolchain, and Windows developers can build with mingw-w64 through MSYS2
+using the same CMake presets. Revisit only if the real MPQDraft turns out
+to have an interface problem with the GCC-built plugin that can't be fixed
+on the GCC side. It would need MSVC equivalents for:
+- the GCC linker flags (static runtime, `--kill-at`, stdcall fixup) and
+  `-Wall -Wextra`
+- `XpCompat.cpp`, which replaces the `GetThreadId` import with a GCC-only
+  `__asm__` symbol name
+- the test helper DLLs' import libraries, made with `dlltool`
+- the `.def` export entry, written for GCC's name decoration
