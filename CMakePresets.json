@@ -1,0 +1,37 @@
+{
+	"version": 6,
+	"configurePresets": [
+		{
+			"name": "mingw",
+			"hidden": true,
+			"toolchainFile": "${sourceDir}/cmake/i686-w64-mingw32.cmake",
+			"binaryDir": "${sourceDir}/build/${presetName}"
+		},
+		{
+			"name": "mingw-debug",
+			"displayName": "Windows (mingw-w64), debug",
+			"inherits": "mingw",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug"
+			}
+		},
+		{
+			"name": "mingw-release",
+			"displayName": "Windows (mingw-w64), release",
+			"inherits": "mingw",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release"
+			}
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "mingw-debug",
+			"configurePreset": "mingw-debug"
+		},
+		{
+			"name": "mingw-release",
+			"configurePreset": "mingw-release"
+		}
+	]
+}
