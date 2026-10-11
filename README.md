@@ -1,6 +1,6 @@
 # ThunderGraft
 
-An [MPQDraft](http://sourceforge.net/projects/mpqdraft/) plugin that lets Diablo, Diablo II, StarCraft and Warcraft II: Battle.net Edition play music in MP3, Ogg Vorbis and FLAC, as well as WAV. See [`MPQDraft/ThunderGraft/README.md`](MPQDraft/ThunderGraft/README.md) for what it does and how to use it.
+An [MPQDraft](http://sourceforge.net/projects/mpqdraft/) plugin that lets Diablo, Diablo II, StarCraft and Warcraft II: Battle.net Edition play music in MP3, Ogg Vorbis and FLAC, as well as WAV. See [`docs/README.md`](docs/README.md) for what it does and how to use it.
 
 The plugin is a 32-bit Windows DLL, `ThunderGraft.qdp`, as the games and MPQDraft are 32-bit Windows programs. It is built with GCC (mingw-w64), normally cross-compiled on Linux, and only depends on open-source code: [miniaudio](https://miniaud.io) and stb_vorbis, which are compiled into the plugin. See [`third_party/README.md`](third_party/README.md).
 
@@ -68,8 +68,9 @@ Debug builds log to `ThunderGraft log - <date and time>.txt` in the Windows temp
 
 | Path | What |
 |---|---|
-| `MPQDraft/ThunderGraft/` | The plugin |
-| `Common/` | Helpers shared with MPQDraft: the plugin interface, import table patching, debug logging |
+| `src/` | The plugin |
+| `docs/` | The user readme |
+| `Common/` | Helpers that came from MPQDraft's source, since modified: the plugin interface, import table patching, debug logging |
 | `tests/` | Tests, fakes, and the audio fixtures |
 | `third_party/` | Vendored dependencies |
 | `cmake/` | The mingw-w64 toolchain file |

@@ -190,7 +190,7 @@ Behaviour changes in the DDA emulation, deliberate:
     - clean exit, with no crash (cf. the 2009.9.22 fix)
     - running alongside other plugins
 - [x] Docs: `README.md` with build and test instructions; the user readme
-      (now `MPQDraft/ThunderGraft/README.md`) updated
+      (now `docs/README.md`) updated
       (formats, no `fmodex.dll`, StarEdit removed, credits, licenses, changelog).
 
 ## Later
