@@ -44,14 +44,16 @@ What the tests cover:
 
 | Test | What |
 |---|---|
-| `portable_tests` | The audio engine on miniaudio's null output device, playing every supported format from `tests/fixtures`; the Ogg Vorbis length reader; DirectSound unit conversions |
-| `dda_player_tests` | The emulation of Storm's DDA functions, against a fake engine, fake Storm file functions and fake DirectSound buffers |
+| `portable_tests` | The audio engine on miniaudio's null output device, playing every supported format from `tests/fixtures`; what the engine outputs, rendered without a device and measured, for volume, pan, pitch and resampling; the Ogg Vorbis length reader; DirectSound unit conversions |
+| `dda_player_tests` | The emulation of Storm's DDA functions, against a fake engine, fake Storm file functions and fake DirectSound buffers; and on the real engine, measuring what DDA settings sound like |
 | `hook_api_tests` | Import table patching, including damaged images; the Windows XP compatibility shim |
 | `plugin_tests` | The built plugin loaded into a stand-in game with a fake `Storm.dll`: exports, the plugin interface, that the hooks are installed, and that without an audio engine everything is forwarded to Storm |
 | `plugin_engine_tests` | The same, with the audio engine on a null output device, playing real files through the fake Storm |
 | `plugin_dll_check` | The plugin's exports and imports |
 
 The audio files in `tests/fixtures` are committed; `tests/fixtures/generate.sh` documents how they were made.
+
+If a test case runs for more than 90 seconds, the test program says which one and exits (`TG_TEST_WATCHDOG_SECONDS` changes the limit).
 
 ## Debugging
 

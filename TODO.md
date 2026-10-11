@@ -158,10 +158,19 @@ Behaviour changes in the DDA emulation, deliberate:
       within the search window.
 - [x] End-to-end plugin tests with the engine on the null device, playing real
       files through the fake `Storm.dll`.
-- [ ] Partly covered: that volume, pan and pitch actually change the output (the
-      null device can't be listened to; only that the calls succeed is tested),
-      and end detection stopping a game-supplied buffer with the real engine
-      (covered with the fake engine only).
+- [x] Output tests: an engine mode with no device renders the mix on demand, and
+      the tests measure level and frequency per channel of the 440 hz fixtures.
+      They cover every format decoding to the right tone for the right length,
+      resampling, volume, DirectSound-style pan, pitch, muting, seeking and
+      mixing, both on the engine and through `CDdaPlayer` (DDA volumes and pans
+      in 1/100 dB, start positions in bytes, game-supplied buffers, focus).
+      Deliberately broken volume, pan and pitch code fails them.
+- [ ] **Intermittent hang, not yet diagnosed.** Three test programs (native and
+      under Wine, including `plugin_engine_tests`, where the engine is never
+      shut down) each hung once, all within the same few minutes; hundreds of
+      runs before and since were clean, including under parallel load and under
+      gdb. The test runner now has a watchdog that names the hung test case
+      after 90 s; if it happens again, start from there.
 
 ## Release
 
