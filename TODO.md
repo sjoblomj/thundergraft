@@ -19,7 +19,8 @@ What's left, in order of importance:
    In particular, check early that MSVC-built MPQDraft can call the GCC-built
    plugin interface.
 2. Bump `BUILD_STRING` for a release.
-3. CI, and the other items under "Later".
+3. CI on every push, and the other items under "Later". Tagged releases
+   are built, tested and published by `.github/workflows/release.yml`.
 
 ## Decisions
 
@@ -191,7 +192,10 @@ Behaviour changes in the DDA emulation, deliberate:
     - running alongside other plugins
 - [x] Docs: `README.md` with build and test instructions; the user readme
       (now `docs/README.md`) updated
-      (formats, no `fmodex.dll`, StarEdit removed, credits, licenses, changelog).
+      (formats, no `fmodex.dll`, StarEdit removed, credits, licenses); the
+      update history moved to `CHANGELOG.md`.
+- [x] Release workflow: pushing a tag builds, tests, and publishes a GitHub
+      release with `ThunderGraft-<tag>.qdp`.
 
 ## Later
 

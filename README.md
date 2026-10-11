@@ -55,6 +55,17 @@ The audio files in `tests/fixtures` are committed; `tests/fixtures/generate.sh` 
 
 If a test case runs for more than 90 seconds, the test program says which one and exits (`TG_TEST_WATCHDOG_SECONDS` changes the limit).
 
+## Releasing
+
+Pushing a tag builds the release preset and runs the tests on GitHub Actions (`.github/workflows/release.yml`). If they pass, it makes a GitHub release named after the tag with `ThunderGraft-<tag>.qdp` attached. The release notes are the section of [`CHANGELOG.md`](CHANGELOG.md) whose heading is the tag, without a leading `v`; without one, GitHub lists the commits since the last release.
+
+```sh
+git tag 2026.10.12.1
+git push origin 2026.10.12.1
+```
+
+The version the plugin reports to MPQDraft is `BUILD_STRING` in `src/ThunderGraft.h`, which isn't taken from the tag.
+
 ## Debugging
 
 The `THUNDERGRAFT_AUDIO` environment variable changes how the plugin plays sounds:
@@ -74,6 +85,7 @@ Debug builds log to `ThunderGraft log - <date and time>.txt` in the Windows temp
 | `tests/` | Tests, fakes, and the audio fixtures |
 | `third_party/` | Vendored dependencies |
 | `cmake/` | The mingw-w64 toolchain file |
+| `.github/workflows/` | The release workflow |
 
 ## License
 

@@ -1,0 +1,55 @@
+# Builds and tests the plugin when a tag is pushed, and publishes it as a
+# GitHub release with ThunderGraft-<tag>.qdp attached.
+name: Release
+
+on:
+  push:
+    tags: ['*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # A plain Ubuntu image, so 32-bit Wine installs without clashing with the
+    # packages preinstalled on the runner
+    container: ubuntu:24.04
+    steps:
+      - name: Install the toolchain and Wine
+        run: |
+          dpkg --add-architecture i386
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git cmake make g++-mingw-w64-i686 binutils-mingw-w64-i686 \
+            wine wine32:i386
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake --preset mingw-release
+          cmake --build --preset mingw-release --parallel
+
+      - name: Test
+        run: ctest --preset mingw-release
+
+      - name: Package
+        id: package
+        run: |
+          cp build/mingw-release/bin/ThunderGraft.qdp "ThunderGraft-${GITHUB_REF_NAME}.qdp"
+          # The release notes are the CHANGELOG.md section for this tag, if there is one
+          awk -v version="${GITHUB_REF_NAME#v}" '
+            /^## / { if (found) exit; found = ($2 == version); next }
+            found
+          ' CHANGELOG.md > release-notes.md
+          cat release-notes.md
+          if [ -s release-notes.md ]; then echo "has_notes=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ThunderGraft-${{ github.ref_name }}.qdp
+          body_path: release-notes.md
+          # Without a CHANGELOG.md section, list the commits since the last release
+          generate_release_notes: ${{ steps.package.outputs.has_notes != 'true' }}
