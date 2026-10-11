@@ -9,9 +9,70 @@
 #include <QHookAPI.h>
 #include <winnt.h>
 #include <assert.h>
+#include <stddef.h>
+#include <string.h>
 
-using namespace std;
-using namespace stdext;
+// Gets the PE header of a loaded module, after checking that the module looks
+// like a valid image for this address space. Returns NULL if it does not.
+static PIMAGE_NT_HEADERS GetImageNtHeaders(IN HMODULE hModule)
+{
+	assert(hModule);
+
+	// The HMODULE is actually a pointer to the image's IMAGE_DOS_HEADER
+	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
+
+	// Check if it looks like a DOS header, and pass up the DOS header to 
+	// get to the Win32 (PE) header. The offset to the PE header must leave
+	// room for the PE header itself inside the first page of the image, which
+	// is always mapped.
+	if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE
+		|| pDosHeader->e_lfanew < (LONG)sizeof(IMAGE_DOS_HEADER)
+		|| pDosHeader->e_lfanew > 0x1000 - (LONG)sizeof(IMAGE_NT_HEADERS))
+		return NULL;
+
+	// The DOS header contains a field that indicates the offset to the
+	// Windows PE header.
+	PIMAGE_NT_HEADERS pNTHeader = (PIMAGE_NT_HEADERS)
+		((LPBYTE)pDosHeader + pDosHeader->e_lfanew);
+
+	// Verify that it's the proper file format for this address space
+	if (pNTHeader->Signature != IMAGE_NT_SIGNATURE
+		|| pNTHeader->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC)
+		return NULL;
+
+	return pNTHeader;
+}
+
+// Checks that nSize bytes starting at the relative virtual address nRVA lie
+// within the image. This is what keeps us from wandering off into unmapped
+// memory when a module's headers are damaged or not what we expect.
+static BOOL IsRangeInImage(IN HMODULE hModule, IN DWORD nRVA, IN DWORD nSize)
+{
+	PIMAGE_NT_HEADERS pNTHeader = GetImageNtHeaders(hModule);
+	if (!pNTHeader)
+		return FALSE;
+
+	DWORD nImageSize = pNTHeader->OptionalHeader.SizeOfImage;
+	return nRVA < nImageSize && nSize <= nImageSize - nRVA;
+}
+
+// Checks that the null-terminated string at the relative virtual address nRVA
+// lies entirely within the image.
+static BOOL IsStringInImage(IN HMODULE hModule, IN DWORD nRVA)
+{
+	PIMAGE_NT_HEADERS pNTHeader = GetImageNtHeaders(hModule);
+	if (!pNTHeader)
+		return FALSE;
+
+	DWORD nImageSize = pNTHeader->OptionalHeader.SizeOfImage;
+	for (DWORD iChar = nRVA; iChar < nImageSize; iChar++)
+	{
+		if (!((LPBYTE)hModule)[iChar])
+			return TRUE;
+	}
+
+	return FALSE;
+}
 
 // Get a given data directory entry from an HMODULE. The data directory contains entries for important sections in the module, such as the import and export tables. This requires a bit of parsing of the PE file format - just enough to determine that it's a PE file and find its data directory.
 BOOL FindDataDirectoryEntry(
@@ -27,32 +88,23 @@ BOOL FindDataDirectoryEntry(
 	assert(hModule);
 	assert(lplpDirEntry);
 
-	// The HMODULE is actually a pointer to the image's IMAGE_DOS_HEADER
-	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)hModule;
-
-	// Check if it looks like a DOS header, and pass up the DOS header to 
-	// get to the Win32 (PE) header
-	if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE
-		|| pDosHeader->e_lfanew == 0)
-		return FALSE;
-
-	// The DOS header contains a field that indicates the offset to the
-	// Windows PE header.
-	PIMAGE_NT_HEADERS pNTHeader = (PIMAGE_NT_HEADERS)
-		((LPBYTE)pDosHeader + pDosHeader->e_lfanew);
-
-	// Verify that it's the proper file format for this address space
-	if (pNTHeader->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC)
+	PIMAGE_NT_HEADERS pNTHeader = GetImageNtHeaders(hModule);
+	if (!pNTHeader)
 		return FALSE;
 
 	// It's possible the directory entry in the table doesn't exist. The table
 	// is variable size, to allow new entries to be created later.
-	if (iEntryIndex >= pNTHeader->OptionalHeader.NumberOfRvaAndSizes)
+	if (iEntryIndex >= pNTHeader->OptionalHeader.NumberOfRvaAndSizes
+		|| iEntryIndex >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES)
 		return FALSE;
 
 	// It's also possible that the entry in the table is empty
 	IMAGE_DATA_DIRECTORY &dirEntry = pNTHeader->OptionalHeader.DataDirectory[iEntryIndex];
 	if (!dirEntry.Size || !dirEntry.VirtualAddress)
+		return FALSE;
+
+	// Or that it's damaged
+	if (!IsRangeInImage(hModule, dirEntry.VirtualAddress, dirEntry.Size))
 		return FALSE;
 
 	// Return the info that is requested
@@ -63,7 +115,17 @@ BOOL FindDataDirectoryEntry(
 	return TRUE;
 }
 
-// Does the actual patching. The public functions merely hash_set up some of the more peculiar parameters to this function before calling it. Also, this function may execute recursively, depending on whether we want to patch the import entry in all modules, or just a specific one. In the case of the former, we expect to have this function called for the EXE itself, and any DLLs that get loaded; this should account for all modules in the process. Returns the number of import table entries replaced, or (DWORD)-1 on failure.
+// Checks that an import descriptor and the tables it refers to lie within the
+// image. Does not check the individual names imported by name.
+static BOOL IsImportDescriptorValid(IN HMODULE hModule, IN const IMAGE_IMPORT_DESCRIPTOR &importDesc)
+{
+	return IsStringInImage(hModule, importDesc.Name)
+		&& IsRangeInImage(hModule, importDesc.FirstThunk, sizeof(FARPROC))
+		&& (!importDesc.OriginalFirstThunk 
+			|| IsRangeInImage(hModule, importDesc.OriginalFirstThunk, sizeof(IMAGE_THUNK_DATA)));
+}
+
+// Does the actual patching. The public functions merely set up some of the more peculiar parameters to this function before calling it. Also, this function may execute recursively, depending on whether we want to patch the import entry in all modules, or just a specific one. In the case of the former, we expect to have this function called for the EXE itself, and any DLLs that get loaded; this should account for all modules in the process. Returns the number of import table entries replaced, or (DWORD)-1 on failure.
 DWORD PatchImportCore(
 	// The module whose imports we are patching
 	IN HMODULE hHostProgram, 
@@ -75,7 +137,7 @@ DWORD PatchImportCore(
 	IN FARPROC pfnNewFunction, 
 	// Whether or not this function should call itself recursively to patch all modules imported by the one it was originally supposed to patch
 	IN BOOL bRecurse, 
-	// A hash_set of modules to exclude from patching. If the target module is in this list, this function immediately returns success. If not, the module is added to this list. If this is NULL (not recommended), all modules are patched.
+	// A set of modules to exclude from patching. If the target module is in this list, this function immediately returns success. If not, the module is added to this list. If this is NULL (not recommended), all modules are patched.
 	IN OUT OPTIONAL ModuleSet *pModules
 	)
 {
@@ -108,17 +170,25 @@ DWORD PatchImportCore(
 	// The import table entries will be arranged according to the module that
 	// they're imported from. So first we need to find the right module in the
 	// import table.
-	DWORD iDescIndex = 0;
 	DWORD nPatchCount = 0;	// Number of patches made in this module and children
 
-	for (DWORD iDescIndex = 0; pImportDesc[iDescIndex].Name; iDescIndex++)
+	DWORD nMaxDescriptors = nImportSize / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+	for (DWORD iDescIndex = 0; iDescIndex < nMaxDescriptors && pImportDesc[iDescIndex].Name; iDescIndex++)
 	{
+		if (!IsImportDescriptorValid(hHostProgram, pImportDesc[iDescIndex]))
+			return (DWORD)-1;
+
 		LPCSTR lpszImportName = (LPCSTR)
 			((LPBYTE)hHostProgram + pImportDesc[iDescIndex].Name);
 		HMODULE hChildModule = GetModuleHandle(lpszImportName);
 
+		// A module that isn't loaded can't be the one we're looking for, and
+		// it has no import table of its own for us to recurse into.
+		if (hChildModule == NULL)
+			continue;
+
 		// Is this the module we're looking for?
-		if (hChildModule != NULL && hChildModule != hExportModule)
+		if (hChildModule != hExportModule)
 		{
 			// No. But if we're supposed to execute recursively, we need to patch
 			// this module, as well.
@@ -146,6 +216,11 @@ DWORD PatchImportCore(
 		// Search through the whole table of imported functions
 		for (DWORD iThunkIndex = 0; pThunk[iThunkIndex]; iThunkIndex++)
 		{
+			// Make sure the next entry is still inside the image
+			if (!IsRangeInImage(hHostProgram, pImportDesc[iDescIndex].FirstThunk 
+				+ (iThunkIndex + 1) * sizeof(FARPROC), sizeof(FARPROC)))
+				return (DWORD)-1;
+
 			// See if this is the function we're looking for
 			if (pThunk[iThunkIndex] != pfnOldFunction)
 				continue;	// Nope
@@ -176,8 +251,8 @@ DWORD PatchImportCore(
 }
 
 // This is actually just a thin wrapper around PatchImportCore. All it does is 
-// hash_set up an SEH frame, get the HMODULE from the exporting module name, and 
-// then call PatchImportCore.
+// get the HMODULE from the exporting module name, and then call 
+// PatchImportCore.
 DWORD WINAPI PatchImportEntry(
 	IN HMODULE hHostProgram, 
 	IN LPCSTR lpszModuleName, 
@@ -189,28 +264,19 @@ DWORD WINAPI PatchImportEntry(
 	assert(lpszModuleName);
 	assert(lpModuleSet);
 
-	// There are a lot of things that could go wrong, here. So lay down a 
-	// blanked SEH frame, just in case.
-	__try
-	{
-		// Look up the module that is being imported from. This seems really weird,
-		// but it was the most reliable way I could think of of checking whether a
-		// module being imported from is equal to a module that we've already
-		// patched, as there can be many file name forms in the import table (or 
-		// specified by the caller, for that matter).
-		HMODULE hExportModule = GetModuleHandle(lpszModuleName);
-		if (!hExportModule)
-			return (DWORD)-1;
-
-		// Do the patching itself
-		return PatchImportCore(hHostProgram, hExportModule, 
-			pfnOldFunction, pfnNewFunction, bRecurse, lpModuleSet);
-	}
-	__except(EXCEPTION_EXECUTE_HANDLER)
-	{
-		// It fell down and went boom. Pick it up and kick it out the door.
+	// Look up the module that is being imported from. This seems really weird,
+	// but it was the most reliable way I could think of of checking whether a
+	// module being imported from is equal to a module that we've already
+	// patched, as there can be many file name forms in the import table (or 
+	// specified by the caller, for that matter).
+	HMODULE hExportModule = GetModuleHandle(lpszModuleName);
+	if (!hExportModule)
 		return (DWORD)-1;
-	}
+
+	// Do the patching itself. Damaged headers are caught by the checks in
+	// PatchImportCore, which return failure rather than crashing.
+	return PatchImportCore(hHostProgram, hExportModule, 
+		pfnOldFunction, pfnNewFunction, bRecurse, lpModuleSet);
 }
 
 DWORD PatchImportCore(
@@ -253,17 +319,25 @@ DWORD PatchImportCore(
 	// The import table entries will be arranged according to the module that
 	// they're imported from. So first we need to find the right module in the
 	// import table.
-	DWORD iDescIndex = 0;
 	DWORD nPatchCount = 0;	// Number of patches made in this module and children
 
-	for (DWORD iDescIndex = 0; pImportDesc[iDescIndex].Name; iDescIndex++)
+	DWORD nMaxDescriptors = nImportSize / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+	for (DWORD iDescIndex = 0; iDescIndex < nMaxDescriptors && pImportDesc[iDescIndex].Name; iDescIndex++)
 	{
+		if (!IsImportDescriptorValid(hHostProgram, pImportDesc[iDescIndex]))
+			return (DWORD)-1;
+
 		LPCSTR lpszImportName = (LPCSTR)
 			((LPBYTE)hHostProgram + pImportDesc[iDescIndex].Name);
 		HMODULE hChildModule = GetModuleHandle(lpszImportName);
 
+		// A module that isn't loaded can't be the one we're looking for, and
+		// it has no import table of its own for us to recurse into.
+		if (hChildModule == NULL)
+			continue;
+
 		// Is this the module we're looking for?
-		if (hChildModule != NULL && hChildModule != hExportModule)
+		if (hChildModule != hExportModule)
 		{
 			// No. But if we're supposed to execute recursively, we need to patch
 			// this module, as well.
@@ -306,6 +380,13 @@ DWORD PatchImportCore(
 		// Is it imported by name or by ordinal?
 		for (DWORD iThunkIndex = 0; pThunk[iThunkIndex]; iThunkIndex++)
 		{
+			// Make sure the next entries are still inside the image
+			if (!IsRangeInImage(hHostProgram, pImportDesc[iDescIndex].FirstThunk 
+					+ (iThunkIndex + 1) * sizeof(FARPROC), sizeof(FARPROC))
+				|| !IsRangeInImage(hHostProgram, pImportDesc[iDescIndex].OriginalFirstThunk 
+					+ (iThunkIndex + 1) * sizeof(IMAGE_THUNK_DATA), sizeof(IMAGE_THUNK_DATA)))
+				return (DWORD)-1;
+
 			// See if this is the function we're looking for
 			if (IMAGE_SNAP_BY_ORDINAL(pOrigThunk[iThunkIndex].u1.Ordinal))
 			{
@@ -317,6 +398,10 @@ DWORD PatchImportCore(
 			else
 			{
 				// It's imported by name
+				if (!IsStringInImage(hHostProgram, (DWORD)pOrigThunk[iThunkIndex].u1.AddressOfData 
+					+ offsetof(IMAGE_IMPORT_BY_NAME, Name)))
+					return (DWORD)-1;
+
 				PIMAGE_IMPORT_BY_NAME pThunkName = (PIMAGE_IMPORT_BY_NAME)
 					((LPBYTE)hHostProgram + pOrigThunk[iThunkIndex].u1.AddressOfData);
 
@@ -382,18 +467,9 @@ DWORD WINAPI PatchImportEntry(
 	if (lpModuleMap)
 		lpModuleMap->clear();
 
-	// There are a lot of things that could go wrong, here. So lay down a 
-	// blanked SEH frame, just in case.
-	__try
-	{
-		// Do the patching itself
-		return PatchImportCore(hHostProgram, hExportModule, 
-			lpszFunctionName, nFunctionOrdinal, pfnNewFunction, bRecurse, 
-			lpModuleSet, lpModuleMap);
-	}
-	__except(EXCEPTION_EXECUTE_HANDLER)
-	{
-		// It fell down and went boom. Pick it up and kick it out the door.
-		return (DWORD)-1;
-	}
+	// Do the patching itself. Damaged headers are caught by the checks in
+	// PatchImportCore, which return failure rather than crashing.
+	return PatchImportCore(hHostProgram, hExportModule, 
+		lpszFunctionName, nFunctionOrdinal, pfnNewFunction, bRecurse, 
+		lpModuleSet, lpModuleMap);
 }

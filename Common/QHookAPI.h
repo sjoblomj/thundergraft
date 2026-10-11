@@ -10,13 +10,13 @@
 #define QHOOKAPI_H
 
 #include <windows.h>
-#include <hash_set>
-#include <hash_map>
+#include <unordered_set>
+#include <unordered_map>
 
 // We're going to keep track of all the modules we've patched so that we don't
 // do the same one and its decendants twice. This will significantly speed up
 // recursive patching operations.
-typedef stdext::hash_set<HMODULE> ModuleSet;
+typedef std::unordered_set<HMODULE> ModuleSet;
 
 /*
 	* PatchImportEntry *
@@ -28,7 +28,7 @@ typedef stdext::hash_set<HMODULE> ModuleSet;
 	The import table is a list of functions a module will call in other 
 	modules, such as the Windows system DLLs. Calls made normally in the source
 	will go through the import table to locate the function in a different
-	module; this import table will be hash_set up by Windows when the module in
+	module; this import table will be set up by Windows when the module in
 	question is loaded. GetProcAddress, however, does not use the import table.
 	Rather, it goes directly to the module the desired function is in, and 
 	looks at its export table, which lists functions that module makes 
@@ -50,7 +50,7 @@ DWORD WINAPI PatchImportEntry(
 	IN FARPROC pfnOldFunction, 
 	// The function which is to replace the old function in import tables
 	IN FARPROC pfnNewFunction, 
-	// A hash_set of modules that have already been patched. This function will
+	// A set of modules that have already been patched. This function will
 	// ignore any modules in this list, and add any not in the list to it.
 	IN OUT ModuleSet *lpModuleSet,
 	// Whether the function should execute recursively. If TRUE, this function
@@ -85,7 +85,7 @@ inline DWORD WINAPI PatchImportEntry(
 // patched differently in different modules, there's the possibility that there
 // will be a one-to-many relationship. This map indicates the different 
 // functions our target function has been patched to, and in which modules.
-typedef stdext::hash_map<HMODULE, FARPROC> ModuleFunctionMap;
+typedef std::unordered_map<HMODULE, FARPROC> ModuleFunctionMap;
 
 /*
 	Searches through the import table(s) of one or more modules to for a single

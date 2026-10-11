@@ -11,6 +11,7 @@
 #define QDEBUG_H
 
 #include <windows.h>
+#include <stdarg.h>
 
 // Functions used internally. Ignore these.
 BOOL WINAPI QDebugOpenLogFileFn(LPCSTR lpszAppName, LPSTR lpszFileName, DWORD dwBufferLen);
@@ -18,7 +19,7 @@ BOOL WINAPI QDebugCloseLogFileFn();
 
 BOOL WINAPI QDebugCloseDeleteLogFileFn();
 
-BOOL _cdecl QDebugWriteEntryFn(LPCSTR lpszFormat, va_list params);
+BOOL __cdecl QDebugWriteEntryFn(LPCSTR lpszFormat, va_list params);
 
 /*
 	* QDebugWriteEntry *
@@ -33,6 +34,10 @@ inline void QDebugWriteEntry(LPCSTR lpszFormat, ...)
 	va_start(params, lpszFormat);
 
 	QDebugWriteEntryFn(lpszFormat, params);
+
+	va_end(params);
+#else
+	(void)lpszFormat;
 #endif
 }
 

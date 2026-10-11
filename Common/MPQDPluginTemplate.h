@@ -10,6 +10,7 @@
 #define MPQDRAFTPLUGINTEMPLATE_H
 
 #include <windows.h>
+#include <string.h>
 #include <MPQDraftPlugin.h>
 
 #if !defined(PLUGIN_ID)
@@ -51,7 +52,7 @@ public:
 		return TRUE;
 	}
 
-	virtual BOOL WINAPI Configure(HWND hParentWnd)
+	virtual BOOL WINAPI Configure(HWND /*hParentWnd*/)
 	{
 		return TRUE;
 	}
@@ -61,7 +62,7 @@ public:
 		return TRUE;
 	}
 
-	virtual BOOL WINAPI GetModules(MPQDRAFTPLUGINMODULE *lpPluginModules, LPDWORD lpnNumModules)
+	virtual BOOL WINAPI GetModules(MPQDRAFTPLUGINMODULE * /*lpPluginModules*/, LPDWORD lpnNumModules)
 	{
 		if (!lpnNumModules)
 			return FALSE;
@@ -71,7 +72,7 @@ public:
 		return TRUE;
 	}
 
-	virtual BOOL WINAPI InitializePlugin(IMPQDraftServer *lpMPQDraftServer)
+	virtual BOOL WINAPI InitializePlugin(IMPQDraftServer * /*lpMPQDraftServer*/)
 	{
 		return TRUE;
 	}

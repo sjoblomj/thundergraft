@@ -416,7 +416,10 @@ struct IMPQDraftPlugin
 		- GetMPQDraftPlugin will only be called once, so it isn't necessary
 		to instantiate an IMPQDraftPlugin for each call. A single global
 		IMPQDraftPlugin is sufficient.
+
+	It has C linkage so that its exported name doesn't depend on the
+	compiler's C++ name mangling.
 */
-BOOL WINAPI GetMPQDraftPlugin(IMPQDraftPlugin **lppMPQDraftPlugin);
+extern "C" BOOL WINAPI GetMPQDraftPlugin(IMPQDraftPlugin **lppMPQDraftPlugin);
 
 #endif // #ifndef QDPLUGIN_H
