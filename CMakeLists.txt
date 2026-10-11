@@ -82,6 +82,8 @@ if(WIN32)
 		${TG_SOURCE_DIR}/ThunderGraft.cpp
 		${TG_SOURCE_DIR}/ThunderGraftPlugin.cpp
 		${TG_SOURCE_DIR}/MiniaudioBackend.cpp
+		# Must be an object of the plugin itself; see XpCompat.h
+		${TG_SOURCE_DIR}/XpCompat.cpp
 		${TG_SOURCE_DIR}/ThunderGraft.rc
 		${TG_COMMON_DIR}/MPQDPluginTemplate.def
 	)

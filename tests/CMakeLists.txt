@@ -95,7 +95,8 @@ if(WIN32)
 	tg_add_helper_dll(hook_user hook_user ${CMAKE_CURRENT_SOURCE_DIR}/helpers/hook_user.def helpers/hook_user.c)
 	target_link_libraries(hook_user PRIVATE hook_target_import)
 
-	add_executable(hook_api_tests test_main.cpp hook_api_test.cpp)
+	# Also tests the XP compatibility shim, which has to be linked as an object, as in the plugin
+	add_executable(hook_api_tests test_main.cpp hook_api_test.cpp xp_compat_test.cpp ${TG_SOURCE_DIR}/XpCompat.cpp)
 	target_link_libraries(hook_api_tests PRIVATE thundergraft_core hook_target_import hook_user_import doctest)
 	target_link_options(hook_api_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	tg_add_test(hook_api_tests)
