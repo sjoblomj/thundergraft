@@ -22,10 +22,19 @@ enum MiniaudioOutput
 	// The system's default output device
 	MINIAUDIO_OUTPUT_DEFAULT,
 	// miniaudio's null device, which consumes audio in real time without playing it. For tests.
-	MINIAUDIO_OUTPUT_NULL
+	MINIAUDIO_OUTPUT_NULL,
+	// No device at all: the mix is only produced when read with ReadMiniaudioEngineOutput, as fast as it is read. For tests that check what would come out of the speakers.
+	MINIAUDIO_OUTPUT_MANUAL
 };
+
+// The format a MINIAUDIO_OUTPUT_MANUAL engine mixes to: interleaved 32-bit float stereo at this rate
+#define MINIAUDIO_MANUAL_SAMPLE_RATE 44100
+#define MINIAUDIO_MANUAL_CHANNELS 2
 
 // Creates an engine, or returns NULL if no output device could be opened. Must be destroyed on a thread where waiting for miniaudio's threads is safe (i.e. not in DllMain).
 IAudioEngine *CreateMiniaudioEngine(MiniaudioOutput output);
+
+// Mixes the next nFrames frames of a MINIAUDIO_OUTPUT_MANUAL engine's output into lpFrames. Returns false for any other engine. Sounds whose data hasn't been decoded yet contribute silence.
+bool ReadMiniaudioEngineOutput(IAudioEngine *lpEngine, float *lpFrames, uint64_t nFrames);
 
 #endif // #ifndef MINIAUDIOENGINE_H

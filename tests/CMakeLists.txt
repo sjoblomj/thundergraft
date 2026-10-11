@@ -47,6 +47,7 @@ add_executable(portable_tests
 	conversions_test.cpp
 	ogg_length_test.cpp
 	engine_test.cpp
+	output_test.cpp
 )
 target_link_libraries(portable_tests PRIVATE thundergraft_portable doctest)
 add_dependencies(portable_tests test_fixtures)
@@ -80,12 +81,14 @@ if(WIN32)
 		add_dependencies(${name}_import ${name}_import_library ${name})
 	endfunction()
 
-	# The DDA emulation, with a fake engine, fake Storm and fake DirectSound buffers
+	# The DDA emulation, with a fake engine, fake Storm and fake DirectSound buffers; and with the real engine, measuring its output
 	add_executable(dda_player_tests
 		test_main.cpp
 		dda_player_test.cpp
+		dda_output_test.cpp
 		fakes/FakeStorm.cpp
 	)
+	add_dependencies(dda_player_tests test_fixtures)
 	target_link_libraries(dda_player_tests PRIVATE thundergraft_core doctest)
 	target_link_options(dda_player_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	tg_add_test(dda_player_tests)

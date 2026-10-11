@@ -8,6 +8,7 @@
 #include "OggLength.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <map>
 #include <new>
 
@@ -322,6 +323,8 @@ namespace
 	class CMiniaudioEngine : public IAudioEngine
 	{
 	private:
+		MiniaudioOutput m_output;
+
 		CAudioFileVfs m_vfs;
 
 		ma_resource_manager m_resourceManager;
@@ -334,6 +337,7 @@ namespace
 	public:
 		CMiniaudioEngine()
 		{
+			m_output = MINIAUDIO_OUTPUT_DEFAULT;
 			m_bResourceManagerInitialized = false;
 			m_bContextInitialized = false;
 			m_bEngineInitialized = false;
@@ -351,6 +355,8 @@ namespace
 
 		bool Initialize(MiniaudioOutput output)
 		{
+			m_output = output;
+
 			// The resource manager the engine would make for itself converts every sound to the output device's sampling rate as it decodes. Positions and lengths would then be in the device's frames rather than the file's, which the DDA functions report to the game. So keep each file's own rate and channels; the engine resamples as it mixes instead.
 			ma_resource_manager_config resourceManagerConfig = ma_resource_manager_config_init();
 			resourceManagerConfig.pVFS = m_vfs.Vfs();
@@ -372,11 +378,34 @@ namespace
 				m_bContextInitialized = true;
 				engineConfig.pContext = &m_context;
 			}
+			else if (output == MINIAUDIO_OUTPUT_MANUAL)
+			{
+				engineConfig.noDevice = MA_TRUE;
+				engineConfig.channels = MINIAUDIO_MANUAL_CHANNELS;
+				engineConfig.sampleRate = MINIAUDIO_MANUAL_SAMPLE_RATE;
+			}
 
 			if (ma_engine_init(&engineConfig, &m_engine) != MA_SUCCESS)
 				return false;
 
 			m_bEngineInitialized = true;
+
+			return true;
+		}
+
+		bool ReadOutput(float *lpFrames, uint64_t nFrames)
+		{
+			if (m_output != MINIAUDIO_OUTPUT_MANUAL)
+				return false;
+
+			ma_uint64 nRead = 0;
+			ma_result result = ma_engine_read_pcm_frames(&m_engine, lpFrames, nFrames, &nRead);
+			if (result != MA_SUCCESS && result != MA_AT_END)
+				return false;
+
+			// With nothing playing, the engine produces nothing rather than silence; but silence is what a device would play
+			if (nRead < nFrames)
+				memset(lpFrames + nRead * MINIAUDIO_MANUAL_CHANNELS, 0, (size_t)(nFrames - nRead) * MINIAUDIO_MANUAL_CHANNELS * sizeof(float));
 
 			return true;
 		}
@@ -407,6 +436,15 @@ namespace
 			{ return nullptr; }
 		}
 	};
+}
+
+bool ReadMiniaudioEngineOutput(IAudioEngine *lpEngine, float *lpFrames, uint64_t nFrames)
+{
+	CMiniaudioEngine *lpMiniaudioEngine = dynamic_cast<CMiniaudioEngine *>(lpEngine);
+	if (!lpMiniaudioEngine || !lpFrames)
+		return false;
+
+	return lpMiniaudioEngine->ReadOutput(lpFrames, nFrames);
 }
 
 IAudioEngine *CreateMiniaudioEngine(MiniaudioOutput output)
