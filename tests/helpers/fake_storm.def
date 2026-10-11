@@ -1,0 +1,16 @@
+LIBRARY Storm.dll
+EXPORTS
+	SFileCloseFile@4 @253 NONAME
+	SFileDdaBegin@12 @254 NONAME
+	SFileDdaBeginEx@28 @255 NONAME
+	SFileDdaDestroy@0 @256 NONAME
+	SFileDdaEnd@4 @257 NONAME
+	SFileDdaGetPos@12 @258 NONAME
+	SFileDdaGetVolume@12 @259 NONAME
+	SFileDdaInitialize@4 @260 NONAME
+	SFileDdaSetVolume@12 @261 NONAME
+	SFileGetFileSize@8 @265 NONAME
+	SFileReadFile@20 @269 NONAME
+	SFileSetFilePointer@16 @271 NONAME
+	FakeStormCallCount@4
+	FakeStormLastArgs@4

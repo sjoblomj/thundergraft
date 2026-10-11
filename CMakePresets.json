@@ -11,27 +11,29 @@
 			"name": "mingw-debug",
 			"displayName": "Windows (mingw-w64), debug",
 			"inherits": "mingw",
-			"cacheVariables": {
-				"CMAKE_BUILD_TYPE": "Debug"
-			}
+			"cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
 		},
 		{
 			"name": "mingw-release",
 			"displayName": "Windows (mingw-w64), release",
 			"inherits": "mingw",
-			"cacheVariables": {
-				"CMAKE_BUILD_TYPE": "Release"
-			}
+			"cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+		},
+		{
+			"name": "native",
+			"displayName": "Native platform-independent tests",
+			"binaryDir": "${sourceDir}/build/${presetName}",
+			"cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
 		}
 	],
 	"buildPresets": [
-		{
-			"name": "mingw-debug",
-			"configurePreset": "mingw-debug"
-		},
-		{
-			"name": "mingw-release",
-			"configurePreset": "mingw-release"
-		}
+		{ "name": "mingw-debug", "configurePreset": "mingw-debug" },
+		{ "name": "mingw-release", "configurePreset": "mingw-release" },
+		{ "name": "native", "configurePreset": "native" }
+	],
+	"testPresets": [
+		{ "name": "mingw-debug", "configurePreset": "mingw-debug", "output": { "outputOnFailure": true } },
+		{ "name": "mingw-release", "configurePreset": "mingw-release", "output": { "outputOnFailure": true } },
+		{ "name": "native", "configurePreset": "native", "output": { "outputOnFailure": true } }
 	]
 }

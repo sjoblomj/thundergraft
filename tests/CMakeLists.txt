@@ -1,0 +1,104 @@
+add_library(doctest INTERFACE)
+target_include_directories(doctest INTERFACE ${CMAKE_SOURCE_DIR}/third_party/doctest)
+
+# Registers a test program. When cross-compiling, CTest runs it through Wine
+# in a Wine prefix of its own inside the build directory.
+function(tg_add_test name)
+	add_test(NAME ${name} COMMAND ${name})
+	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+		set_tests_properties(${name} PROPERTIES
+			ENVIRONMENT "${TG_WINE_ENVIRONMENT}"
+			FIXTURES_REQUIRED wine_prefix
+		)
+	endif()
+	set_tests_properties(${name} PROPERTIES TIMEOUT 120)
+endfunction()
+
+if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+	# Keep Wine quiet, and keep it from offering to install Mono and Gecko
+	set(TG_WINE_ENVIRONMENT
+		"WINEPREFIX=${CMAKE_BINARY_DIR}/wineprefix"
+		"WINEDEBUG=-all"
+		"WINEDLLOVERRIDES=mscoree,mshtml="
+	)
+	# Creating a prefix takes a while; do it once, before the tests run in parallel
+	add_test(NAME wine_prefix COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} wineboot --init)
+	set_tests_properties(wine_prefix PROPERTIES
+		ENVIRONMENT "${TG_WINE_ENVIRONMENT}"
+		FIXTURES_SETUP wine_prefix
+		TIMEOUT 300
+	)
+endif()
+
+# Platform-independent tests. These also build natively, without the plugin.
+add_executable(portable_tests test_main.cpp conversions_test.cpp)
+target_include_directories(portable_tests PRIVATE ${TG_SOURCE_DIR})
+target_link_libraries(portable_tests PRIVATE doctest)
+tg_add_test(portable_tests)
+
+if(WIN32)
+	# Test programs run without the MinGW runtime DLLs on the path
+	set(TG_TEST_LINK_OPTIONS -static -static-libgcc -static-libstdc++)
+	target_link_options(portable_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
+
+	# Builds a helper DLL that exports undecorated stdcall names, as Storm does,
+	# and an import library that lets callers link to them. The import library
+	# made by the linker loses the @n decoration that callers refer to, so it
+	# is made with dlltool from the .def file instead. Link to <name>_import.
+	find_program(TG_DLLTOOL NAMES i686-w64-mingw32-dlltool dlltool REQUIRED)
+	function(tg_add_helper_dll name dll_name def_file)
+		add_library(${name} SHARED ${ARGN} ${def_file})
+		set_target_properties(${name} PROPERTIES PREFIX "" OUTPUT_NAME ${dll_name})
+		target_link_options(${name} PRIVATE -static-libgcc -Wl,--kill-at)
+
+		set(import_library ${CMAKE_CURRENT_BINARY_DIR}/lib${name}_import.a)
+		add_custom_command(
+			OUTPUT ${import_library}
+			COMMAND ${TG_DLLTOOL} --kill-at --input-def ${def_file} --dllname ${dll_name}.dll --output-lib ${import_library}
+			DEPENDS ${def_file}
+		)
+		add_custom_target(${name}_import_library DEPENDS ${import_library})
+
+		add_library(${name}_import INTERFACE)
+		target_link_libraries(${name}_import INTERFACE ${import_library})
+		add_dependencies(${name}_import ${name}_import_library ${name})
+	endfunction()
+
+	# The DDA emulation, with a fake engine, fake Storm and fake DirectSound buffers
+	add_executable(dda_player_tests
+		test_main.cpp
+		dda_player_test.cpp
+		fakes/FakeStorm.cpp
+	)
+	target_link_libraries(dda_player_tests PRIVATE thundergraft_core doctest)
+	target_link_options(dda_player_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
+	tg_add_test(dda_player_tests)
+
+	# Import table patching, against two small helper DLLs
+	tg_add_helper_dll(hook_target hook_target ${CMAKE_CURRENT_SOURCE_DIR}/helpers/hook_target.def helpers/hook_target.c)
+	tg_add_helper_dll(hook_user hook_user ${CMAKE_CURRENT_SOURCE_DIR}/helpers/hook_user.def helpers/hook_user.c)
+	target_link_libraries(hook_user PRIVATE hook_target_import)
+
+	add_executable(hook_api_tests test_main.cpp hook_api_test.cpp)
+	target_link_libraries(hook_api_tests PRIVATE thundergraft_core hook_target_import hook_user_import doctest)
+	target_link_options(hook_api_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
+	tg_add_test(hook_api_tests)
+
+	# The built plugin, loaded into a stand-in for a game with a fake Storm.dll
+	tg_add_helper_dll(fake_storm Storm ${CMAKE_CURRENT_SOURCE_DIR}/helpers/fake_storm.def helpers/fake_storm.c)
+
+	add_executable(plugin_tests test_main.cpp plugin_test.cpp)
+	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import doctest)
+	target_link_options(plugin_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
+	target_compile_definitions(plugin_tests PRIVATE TG_PLUGIN_FILE="$<TARGET_FILE_NAME:ThunderGraft>")
+	add_dependencies(plugin_tests ThunderGraft)
+	tg_add_test(plugin_tests)
+
+	# What the plugin DLL exports and imports
+	find_program(TG_OBJDUMP NAMES ${CMAKE_OBJDUMP} i686-w64-mingw32-objdump objdump)
+	if(TG_OBJDUMP)
+		add_test(NAME plugin_dll_check
+			COMMAND ${CMAKE_COMMAND} -DOBJDUMP=${TG_OBJDUMP} -DPLUGIN=$<TARGET_FILE:ThunderGraft> -P ${CMAKE_CURRENT_SOURCE_DIR}/check_plugin_dll.cmake
+		)
+	endif()
+endif()

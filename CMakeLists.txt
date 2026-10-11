@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(THUNDERGRAFT_BUILD_TESTS "Build the tests" ON)
+
 # Put every executable and DLL in one directory, so test programs find the
 # plugin and the fake Storm.dll next to themselves.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -17,18 +19,20 @@ set(TG_COMMON_DIR ${CMAKE_SOURCE_DIR}/Common)
 if(WIN32)
 	enable_language(RC)
 
-	# Settings shared by the plugin and the tests that link its code
+	# Settings shared by the plugin and the tests that use its code
 	add_library(thundergraft_options INTERFACE)
 	target_include_directories(thundergraft_options INTERFACE ${TG_COMMON_DIR} ${TG_SOURCE_DIR})
 	target_compile_definitions(thundergraft_options INTERFACE
-		# Target Windows XP, so that APIs from later versions can't be used by
-		# accident. mingw-w64 defaults to Windows 10.
-		_WIN32_WINNT=0x0501
-		WINVER=0x0501
 		NOMINMAX
 		$<$<CONFIG:Debug>:_DEBUG>
 	)
 	target_compile_options(thundergraft_options INTERFACE -Wall -Wextra)
+
+	# Code that goes into the plugin targets Windows XP, so that APIs from later
+	# versions can't be used by accident. mingw-w64 defaults to Windows 10.
+	# Test programs don't ship, and are free to use newer APIs (GCC's
+	# std::thread needs Vista).
+	set(TG_PLUGIN_DEFINITIONS _WIN32_WINNT=0x0501 WINVER=0x0501)
 
 	# Everything except the plugin entry points, so the tests can link it
 	add_library(thundergraft_core STATIC
@@ -37,6 +41,7 @@ if(WIN32)
 		${TG_SOURCE_DIR}/DdaPlayer.cpp
 	)
 	target_link_libraries(thundergraft_core PUBLIC thundergraft_options)
+	target_compile_definitions(thundergraft_core PRIVATE ${TG_PLUGIN_DEFINITIONS})
 
 	add_library(ThunderGraft SHARED
 		${TG_SOURCE_DIR}/ThunderGraft.cpp
@@ -51,6 +56,7 @@ if(WIN32)
 		OUTPUT_NAME_DEBUG ThunderGraftD
 	)
 	target_link_libraries(ThunderGraft PRIVATE thundergraft_core psapi)
+	target_compile_definitions(ThunderGraft PRIVATE ${TG_PLUGIN_DEFINITIONS})
 	target_link_options(ThunderGraft PRIVATE
 		# The plugin is injected into games and extracted from SEMPQs on its
 		# own, so it must not depend on the MinGW runtime DLLs.
@@ -63,4 +69,9 @@ if(WIN32)
 		-Wl,--enable-stdcall-fixup
 		$<$<NOT:$<CONFIG:Debug>>:-s>
 	)
+endif()
+
+if(THUNDERGRAFT_BUILD_TESTS)
+	enable_testing()
+	add_subdirectory(tests)
 endif()

@@ -1,0 +1,3 @@
+LIBRARY hook_user.dll
+EXPORTS
+	CallHookTargetAdd@8

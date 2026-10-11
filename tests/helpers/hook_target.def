@@ -1,0 +1,4 @@
+LIBRARY hook_target.dll
+EXPORTS
+	HookTargetAdd@8
+	HookTargetByOrdinal@8 @7 NONAME
