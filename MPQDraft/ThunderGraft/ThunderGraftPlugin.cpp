@@ -89,26 +89,7 @@ BOOL WINAPI CThunderGraftPlugin::InitializePlugin(IN IMPQDraftServer *lpMPQDraft
 	if (!PatchFunctionsInModule(m_hHostModule))
 		return FALSE;
 
-	// Without an audio engine, the hooks simply forward everything to Storm
-	IAudioEngine *lpEngine = CreateAudioEngine();
-	QDebugWriteEntry("InitializePlugin : CreateAudioEngine returned %p", lpEngine);
-	if (!lpEngine)
-		return TRUE;
-
-	STORMFILEFUNCTIONS storm;
-	storm.SFileCloseFile = SFileCloseFile;
-	storm.SFileReadFile = SFileReadFile;
-	storm.SFileGetFileSize = SFileGetFileSize;
-	storm.SFileSetFilePointer = SFileSetFilePointer;
-
-	m_player.Initialize(storm, lpEngine);
-
-	if (!CreateUpdateThread())
-		return FALSE;
-
-	// From here on, the hooks use the player. The game hasn't started running yet, so nothing can be calling them at this point.
-	m_lpEngine = lpEngine;
-
+	// The audio engine is started later, when the game initializes the DDA system. Until then, the hooks forward everything to Storm.
 	return TRUE;
 }
 

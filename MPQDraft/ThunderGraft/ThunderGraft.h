@@ -9,7 +9,7 @@
 /*
 	ThunderGraft replaces the Storm DDA system (see DdaPlayer.h) with its own, which can play compressed formats. It hooks the DDA functions in the game's import table, and in GetProcAddress for games that look them up at runtime, and forwards them to a CDdaPlayer.
 
-	If no audio engine is available, the hooks forward to the original Storm functions instead, so the game behaves exactly as it would without ThunderGraft.
+	The audio engine is started when the game initializes the DDA system, which it always does before using any other DDA function. Doing it there rather than in InitializePlugin keeps it out of the patcher's context, where waiting for threads might deadlock. If no audio engine can be started, the hooks forward to the original Storm functions instead, so the game behaves exactly as it would without ThunderGraft.
 */
 
 #ifndef THUNDERGRAFT_H
@@ -71,9 +71,13 @@ private:
 	SFileDdaInitializePtr SFileDdaInitialize;
 	SFileDdaSetVolumePtr SFileDdaSetVolume;
 
-	// The audio engine, or NULL if there is none and the hooks forward to Storm. Deliberately never destroyed; see ~CDdaPlayer.
-	IAudioEngine *m_lpEngine;
+	// The audio engine, or NULL if there is none (yet) and the hooks forward to Storm. Deliberately never destroyed; see ~CDdaPlayer.
+	IAudioEngine *volatile m_lpEngine;
 	CDdaPlayer m_player;
+
+	// Whether starting the audio engine has been attempted, and the lock that makes sure it only happens once
+	BOOL m_bEngineStartAttempted;
+	CRITICAL_SECTION m_csEngineStart;
 
 	// Whether we have passed the destructor and hence should not do any unusual actions in the hook functions or other functions that might get called after DLL_PROCESS_DETACH (e.g. TerminatePlugin).
 	volatile BOOL m_bShutDown;
@@ -90,6 +94,9 @@ private:
 
 	// The reason ppfnOldFunction is LPVOID is so that variable pointers can be implicitely cast to it. Note that this function serves a double purpose - if a pfnNewFunction is specified it patches the function, otherwise it simply gets the current address of that function.
 	BOOL PatchImportEntry(IN HMODULE hHostProgram, IN HMODULE hExportModule, IN OPTIONAL LPCSTR lpszFunctionName, IN OPTIONAL DWORD nFunctionOrdinal, IN OPTIONAL LPVOID pfnNewFunction, OUT OPTIONAL LPVOID ppfnOldFunction);
+
+	// Starts the audio engine, the player and the update thread, the first time it's called
+	void StartAudioEngine();
 
 	BOOL CreateUpdateThread();
 	static unsigned __stdcall UpdateThread(IN void *lpThis);

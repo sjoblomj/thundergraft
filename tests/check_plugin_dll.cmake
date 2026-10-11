@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
+cmake_minimum_required(VERSION 3.20)
+
 # Checks the built plugin DLL with objdump:
 # - GetMPQDraftPlugin is exported under that exact name, at ordinal 100
 # - it imports only from an allowlist of DLLs that ship with every Windows

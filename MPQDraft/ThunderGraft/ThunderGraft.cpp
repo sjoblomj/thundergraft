@@ -64,6 +64,8 @@ CThunderGraftPlugin::CThunderGraftPlugin()
 	SFileDdaSetVolume = NULL;
 
 	m_lpEngine = NULL;
+	m_bEngineStartAttempted = FALSE;
+	InitializeCriticalSection(&m_csEngineStart);
 
 	m_bShutDown = FALSE;
 
@@ -77,6 +79,36 @@ CThunderGraftPlugin::~CThunderGraftPlugin()
 
 	// This is a very minimalistic destructor by necessity. We're inside DllMain, which drastically restricts what we can do (e.g. trying to shut down the audio engine could deadlock waiting for its threads to exit). Furthermore, we still have hooks in various functions that we can't really remove, so we can't just shut down everything here. From here on the hooks forward everything to the original functions, and anything still alive is left to be cleaned up by Windows when the process terminates.
 	m_bShutDown = TRUE;
+}
+
+void CThunderGraftPlugin::StartAudioEngine()
+{
+	EnterCriticalSection(&m_csEngineStart);
+
+	if (!m_bEngineStartAttempted)
+	{
+		m_bEngineStartAttempted = TRUE;
+
+		IAudioEngine *lpEngine = CreateAudioEngine();
+		QDebugWriteEntry("StartAudioEngine : CreateAudioEngine returned %p", lpEngine);
+
+		if (lpEngine)
+		{
+			STORMFILEFUNCTIONS storm;
+			storm.SFileCloseFile = SFileCloseFile;
+			storm.SFileReadFile = SFileReadFile;
+			storm.SFileGetFileSize = SFileGetFileSize;
+			storm.SFileSetFilePointer = SFileSetFilePointer;
+
+			m_player.Initialize(storm, lpEngine);
+
+			// Without the update thread, finished sounds would go unnoticed, so it's all or nothing
+			if (CreateUpdateThread())
+				InterlockedExchangePointer((PVOID *)&m_lpEngine, lpEngine);
+		}
+	}
+
+	LeaveCriticalSection(&m_csEngineStart);
 }
 
 BOOL CThunderGraftPlugin::CreateUpdateThread()
@@ -334,6 +366,9 @@ FARPROC WINAPI CThunderGraftPlugin::PatchGetProcAddress(OPTIONAL IN HMODULE hMod
 BOOL WINAPI CThunderGraftPlugin::PatchDdaInitialize(IN IDirectSound *lpDirectSound)
 {
 	QDebugWriteEntry("PatchDdaInitialize(%p)", lpDirectSound);
+
+	if (!ThunderGraft.m_bShutDown)
+		ThunderGraft.StartAudioEngine();
 
 	return ThunderGraft.SFileDdaInitialize(lpDirectSound);
 }

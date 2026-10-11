@@ -256,3 +256,192 @@ TEST_CASE("GetProcAddress hands out the hooks for Storm's DDA functions")
 		CHECK(FakeStormCallCount(0x101) == nCalls + 1);
 	}
 }
+
+/*
+	The tests below run in a separate process, with THUNDERGRAFT_AUDIO=null: the plugin starts its audio engine on miniaudio's null output device, and plays the sounds itself rather than forwarding to Storm.
+*/
+
+namespace
+{
+	const long DDA_DEFAULT = 0x7FFFFFFF;
+
+	void EnsureEngineStarted()
+	{
+		static bool bStarted = false;
+		if (!bStarted)
+		{
+			EnsureInitialized();
+
+			// The game initializes DDA before using it, which is when the engine starts. Storm still gets initialized too.
+			LONG nCalls = FakeStormCallCount(0x104);
+			REQUIRE(SFileDdaInitialize((IDirectSound *)0xD5) == FAKE_STORM_RESULT(0x104));
+			REQUIRE(FakeStormCallCount(0x104) == nCalls + 1);
+			bStarted = true;
+		}
+	}
+
+	HANDLE OpenFixtureFile(const char *lpszName)
+	{
+		std::string path = std::string("fixtures\\") + lpszName;
+		HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+		REQUIRE_MESSAGE(hFile != INVALID_HANDLE_VALUE, "Couldn't open " << path);
+		return hFile;
+	}
+
+	bool WaitUntil(bool (*condition)(HANDLE), HANDLE hFile, DWORD nTimeoutMs = 5000)
+	{
+		DWORD nStart = GetTickCount();
+		while (GetTickCount() - nStart < nTimeoutMs)
+		{
+			if (condition(hFile))
+				return true;
+			Sleep(5);
+		}
+		return condition(hFile);
+	}
+
+	bool HasFinished(HANDLE hFile)
+	{
+		return !SFileDdaGetPos(hFile, NULL, NULL);
+	}
+
+	bool HasAdvanced(HANDLE hFile)
+	{
+		DWORD nPos = 0;
+		return SFileDdaGetPos(hFile, &nPos, NULL) && nPos > 0;
+	}
+}
+
+TEST_CASE("Engine: sounds play through the engine instead of Storm")
+{
+	EnsureEngineStarted();
+
+	HANDLE hFile = OpenFixtureFile("ogg_vorbis_44100_stereo.ogg");
+	LONG nBeginCalls = FakeStormCallCount(0xFF), nEndCalls = FakeStormCallCount(0x101);
+
+	REQUIRE(SFileDdaBeginEx(hFile, 0x10000, 0, 0, DDA_DEFAULT, DDA_DEFAULT, NULL) == TRUE);
+	CHECK(FakeStormCallCount(0xFF) == nBeginCalls);
+
+	SUBCASE("Position and length are in bytes of 16-bit PCM")
+	{
+		DWORD nPos = 1, nLength = 0;
+		REQUIRE(SFileDdaGetPos(hFile, &nPos, &nLength));
+		CHECK(nLength == 22050 * 4);
+		CHECK(nPos < nLength);
+
+		CHECK(WaitUntil(HasAdvanced, hFile));
+	}
+
+	SUBCASE("Volume can be read and changed")
+	{
+		long nVolume = 1, nPan = 1;
+		REQUIRE(SFileDdaGetVolume(hFile, &nVolume, &nPan));
+		CHECK(nVolume == 0);
+		CHECK(nPan == 0);
+
+		CHECK(SFileDdaSetVolume(hFile, -1000, 500));
+		REQUIRE(SFileDdaGetVolume(hFile, &nVolume, &nPan));
+		CHECK(nVolume == -1000);
+		CHECK(nPan == 500);
+	}
+
+	SUBCASE("The sound ends on its own")
+	{
+		CHECK(WaitUntil(HasFinished, hFile));
+	}
+
+	CHECK(SFileDdaEnd(hFile) == TRUE);
+	CHECK(FakeStormCallCount(0x101) == nEndCalls);
+	CHECK(SFileDdaEnd(hFile) == FALSE);
+
+	LONG nCloseCalls = FakeStormCallCount(0xFD);
+	CHECK(SFileCloseFile(hFile));
+	CHECK(FakeStormCallCount(0xFD) == nCloseCalls + 1);
+}
+
+TEST_CASE("Engine: every supported format plays")
+{
+	EnsureEngineStarted();
+
+	for (const char *lpszName : { "wav_s16_44100_stereo.wav", "wav_u8_22050_mono.wav", "mp3_cbr_44100_stereo.mp3", "mp3_id3v2_120k.mp3", "ogg_vorbis_48000_mono.ogg", "flac_24_96000_stereo.flac" })
+	{
+		std::string name = lpszName;
+		CAPTURE(name);
+
+		HANDLE hFile = OpenFixtureFile(lpszName);
+		REQUIRE(SFileDdaBegin(hFile, 0x10000, 0) == TRUE);
+		CHECK(WaitUntil(HasAdvanced, hFile));
+		CHECK(SFileDdaEnd(hFile));
+		CHECK(SFileCloseFile(hFile));
+	}
+}
+
+TEST_CASE("Engine: looping sounds keep playing past their end")
+{
+	EnsureEngineStarted();
+
+	HANDLE hFile = OpenFixtureFile("wav_u8_22050_mono.wav");
+	REQUIRE(SFileDdaBegin(hFile, 0x10000, DDA_LOOPING) == TRUE);
+
+	Sleep(800);
+
+	DWORD nPos = 0, nLength = 0;
+	CHECK(SFileDdaGetPos(hFile, &nPos, &nLength));
+	CHECK(nLength == 11025 * 2);
+	CHECK(nPos < nLength);
+
+	CHECK(SFileDdaEnd(hFile));
+	CHECK(SFileCloseFile(hFile));
+}
+
+TEST_CASE("Engine: closing a playing file waits until the sound is ended")
+{
+	EnsureEngineStarted();
+
+	HANDLE hFile = OpenFixtureFile("mp3_cbr_44100_stereo.mp3");
+	REQUIRE(SFileDdaBegin(hFile, 0x10000, DDA_LOOPING) == TRUE);
+
+	LONG nCloseCalls = FakeStormCallCount(0xFD);
+	CHECK(SFileCloseFile(hFile));
+	CHECK(FakeStormCallCount(0xFD) == nCloseCalls);
+
+	// Still playing from the file
+	CHECK(WaitUntil(HasAdvanced, hFile));
+
+	CHECK(SFileDdaEnd(hFile));
+	CHECK(FakeStormCallCount(0xFD) == nCloseCalls + 1);
+}
+
+TEST_CASE("Engine: SFileDdaDestroy ends every sound")
+{
+	EnsureEngineStarted();
+
+	HANDLE hFiles[2] = { OpenFixtureFile("flac_16_44100_stereo.flac"), OpenFixtureFile("wav_s24_48000_stereo.wav") };
+	for (HANDLE hFile : hFiles)
+		REQUIRE(SFileDdaBegin(hFile, 0x10000, DDA_LOOPING) == TRUE);
+
+	LONG nDestroyCalls = FakeStormCallCount(0x100);
+	CHECK(SFileDdaDestroy() == FAKE_STORM_RESULT(0x100));
+	CHECK(FakeStormCallCount(0x100) == nDestroyCalls + 1);
+
+	for (HANDLE hFile : hFiles)
+	{
+		CHECK_FALSE(SFileDdaGetVolume(hFile, NULL, NULL));
+		CHECK(SFileCloseFile(hFile));
+	}
+}
+
+TEST_CASE("Engine: files that aren't audio fail to play")
+{
+	EnsureEngineStarted();
+
+	for (const char *lpszName : { "not_audio.wav", "garbage.bin", "empty.bin" })
+	{
+		std::string name = lpszName;
+		CAPTURE(name);
+
+		HANDLE hFile = OpenFixtureFile(lpszName);
+		CHECK(SFileDdaBegin(hFile, 0x10000, 0) == FALSE);
+		CHECK(SFileCloseFile(hFile));
+	}
+}

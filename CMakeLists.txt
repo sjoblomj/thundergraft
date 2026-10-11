@@ -15,6 +15,47 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 set(TG_SOURCE_DIR ${CMAKE_SOURCE_DIR}/MPQDraft/ThunderGraft)
 set(TG_COMMON_DIR ${CMAKE_SOURCE_DIR}/Common)
+set(TG_THIRD_PARTY_DIR ${CMAKE_SOURCE_DIR}/third_party)
+
+if(WIN32)
+	# Code that goes into the plugin targets Windows XP, so that APIs from later
+	# versions can't be used by accident. mingw-w64 defaults to Windows 10.
+	# Test programs don't ship, and are free to use newer APIs (GCC's
+	# std::thread needs Vista).
+	set(TG_PLUGIN_DEFINITIONS _WIN32_WINNT=0x0501 WINVER=0x0501)
+endif()
+
+# miniaudio and stb_vorbis. The configuration has to be the same for
+# everything that includes miniaudio.h, as it changes the size of structures.
+add_library(miniaudio STATIC ${TG_SOURCE_DIR}/MiniaudioImpl.c)
+target_include_directories(miniaudio SYSTEM PUBLIC ${TG_THIRD_PARTY_DIR}/miniaudio)
+target_compile_definitions(miniaudio
+	PUBLIC
+		MA_ENABLE_ONLY_SPECIFIC_BACKENDS
+		MA_ENABLE_WASAPI
+		MA_ENABLE_DSOUND
+		MA_ENABLE_WINMM
+		# Plays nothing; for tests
+		MA_ENABLE_NULL
+		MA_NO_ENCODING
+		MA_NO_GENERATION
+	PRIVATE
+		${TG_PLUGIN_DEFINITIONS}
+)
+if(NOT WIN32)
+	find_package(Threads REQUIRED)
+	target_link_libraries(miniaudio PUBLIC Threads::Threads m ${CMAKE_DL_LIBS})
+endif()
+
+# The platform-independent part of ThunderGraft: the audio engine
+add_library(thundergraft_portable STATIC
+	${TG_SOURCE_DIR}/MiniaudioEngine.cpp
+	${TG_SOURCE_DIR}/OggLength.cpp
+)
+target_include_directories(thundergraft_portable PUBLIC ${TG_SOURCE_DIR})
+target_link_libraries(thundergraft_portable PUBLIC miniaudio)
+target_compile_definitions(thundergraft_portable PRIVATE ${TG_PLUGIN_DEFINITIONS})
+target_compile_options(thundergraft_portable PRIVATE -Wall -Wextra)
 
 if(WIN32)
 	enable_language(RC)
@@ -28,25 +69,19 @@ if(WIN32)
 	)
 	target_compile_options(thundergraft_options INTERFACE -Wall -Wextra)
 
-	# Code that goes into the plugin targets Windows XP, so that APIs from later
-	# versions can't be used by accident. mingw-w64 defaults to Windows 10.
-	# Test programs don't ship, and are free to use newer APIs (GCC's
-	# std::thread needs Vista).
-	set(TG_PLUGIN_DEFINITIONS _WIN32_WINNT=0x0501 WINVER=0x0501)
-
 	# Everything except the plugin entry points, so the tests can link it
 	add_library(thundergraft_core STATIC
 		${TG_COMMON_DIR}/QDebug.cpp
 		${TG_COMMON_DIR}/QHookAPI.cpp
 		${TG_SOURCE_DIR}/DdaPlayer.cpp
 	)
-	target_link_libraries(thundergraft_core PUBLIC thundergraft_options)
+	target_link_libraries(thundergraft_core PUBLIC thundergraft_options thundergraft_portable)
 	target_compile_definitions(thundergraft_core PRIVATE ${TG_PLUGIN_DEFINITIONS})
 
 	add_library(ThunderGraft SHARED
 		${TG_SOURCE_DIR}/ThunderGraft.cpp
 		${TG_SOURCE_DIR}/ThunderGraftPlugin.cpp
-		${TG_SOURCE_DIR}/NullAudioEngine.cpp
+		${TG_SOURCE_DIR}/MiniaudioBackend.cpp
 		${TG_SOURCE_DIR}/ThunderGraft.rc
 		${TG_COMMON_DIR}/MPQDPluginTemplate.def
 	)

@@ -4,7 +4,9 @@ target_include_directories(doctest INTERFACE ${CMAKE_SOURCE_DIR}/third_party/doc
 # Registers a test program. When cross-compiling, CTest runs it through Wine
 # in a Wine prefix of its own inside the build directory.
 function(tg_add_test name)
-	add_test(NAME ${name} COMMAND ${name})
+	add_test(NAME ${name} COMMAND ${name} ${ARGN})
+	# The tests find their fixtures relative to where they run
+	set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
 		set_tests_properties(${name} PROPERTIES
 			ENVIRONMENT "${TG_WINE_ENVIRONMENT}"
@@ -30,10 +32,24 @@ if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
 	)
 endif()
 
+# The audio files the tests play, copied next to the test programs
+file(GLOB TG_FIXTURES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/*)
+list(FILTER TG_FIXTURES EXCLUDE REGEX "generate\\.sh$")
+add_custom_target(test_fixtures
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fixtures
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TG_FIXTURES} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fixtures
+	DEPENDS ${TG_FIXTURES}
+)
+
 # Platform-independent tests. These also build natively, without the plugin.
-add_executable(portable_tests test_main.cpp conversions_test.cpp)
-target_include_directories(portable_tests PRIVATE ${TG_SOURCE_DIR})
-target_link_libraries(portable_tests PRIVATE doctest)
+add_executable(portable_tests
+	test_main.cpp
+	conversions_test.cpp
+	ogg_length_test.cpp
+	engine_test.cpp
+)
+target_link_libraries(portable_tests PRIVATE thundergraft_portable doctest)
+add_dependencies(portable_tests test_fixtures)
 tg_add_test(portable_tests)
 
 if(WIN32)
@@ -91,8 +107,19 @@ if(WIN32)
 	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import doctest)
 	target_link_options(plugin_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	target_compile_definitions(plugin_tests PRIVATE TG_PLUGIN_FILE="$<TARGET_FILE_NAME:ThunderGraft>")
-	add_dependencies(plugin_tests ThunderGraft)
-	tg_add_test(plugin_tests)
+	add_dependencies(plugin_tests ThunderGraft test_fixtures)
+
+	# Without an audio engine: everything is forwarded to Storm
+	tg_add_test(plugin_tests --test-case-exclude=Engine:*)
+	set_property(TEST plugin_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=none)
+
+	# With the audio engine on a null output device: the plugin plays the sounds itself
+	add_test(NAME plugin_engine_tests COMMAND plugin_tests --test-case=Engine:*)
+	set_tests_properties(plugin_engine_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} TIMEOUT 120)
+	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+		set_tests_properties(plugin_engine_tests PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
+	endif()
+	set_property(TEST plugin_engine_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=null)
 
 	# What the plugin DLL exports and imports
 	find_program(TG_OBJDUMP NAMES ${CMAKE_OBJDUMP} i686-w64-mingw32-objdump objdump)

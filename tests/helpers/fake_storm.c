@@ -1,4 +1,4 @@
-/* A stand-in for Storm.dll that records calls, for testing the plugin's hooks without a game */
+/* A stand-in for Storm.dll that records calls, for testing the plugin's hooks without a game. The file functions work on Win32 file handles, so tests can open real files with CreateFile and play them. */
 #define BUILDING_FAKE_STORM
 #include "fake_storm.h"
 
@@ -21,7 +21,10 @@ static BOOL Record(DWORD nOrdinal, DWORD_PTR a0, DWORD_PTR a1, DWORD_PTR a2, DWO
 }
 
 BOOL WINAPI SFileCloseFile(HANDLE hFile)
-{ return Record(0xFD, (DWORD_PTR)hFile, 0, 0, 0, 0, 0, 0); }
+{
+	CloseHandle(hFile);
+	return Record(0xFD, (DWORD_PTR)hFile, 0, 0, 0, 0, 0, 0);
+}
 
 BOOL WINAPI SFileDdaBegin(HANDLE hFile, DWORD dwWAVBufferSize, DWORD dwFlags)
 { return Record(0xFE, (DWORD_PTR)hFile, dwWAVBufferSize, dwFlags, 0, 0, 0, 0); }
@@ -47,14 +50,38 @@ BOOL WINAPI SFileDdaInitialize(IDirectSound *lpDirectSound)
 BOOL WINAPI SFileDdaSetVolume(HANDLE hFile, long nVolume, long nPanPos)
 { return Record(0x105, (DWORD_PTR)hFile, (DWORD_PTR)nVolume, (DWORD_PTR)nPanPos, 0, 0, 0, 0); }
 
+/* The file functions the plugin reads sounds with. They don't record their arguments, as the plugin calls them from its own threads. */
 DWORD WINAPI SFileGetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh)
-{ return Record(0x109, (DWORD_PTR)hFile, (DWORD_PTR)lpFileSizeHigh, 0, 0, 0, 0, 0); }
+{
+	InterlockedIncrement(&g_callCounts[0x109]);
+	return GetFileSize(hFile, lpFileSizeHigh);
+}
 
 BOOL WINAPI SFileReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped)
-{ return Record(0x10D, (DWORD_PTR)hFile, (DWORD_PTR)lpBuffer, nNumberOfBytesToRead, (DWORD_PTR)lpNumberOfBytesRead, (DWORD_PTR)lpOverlapped, 0, 0); }
+{
+	DWORD nRead = 0;
+	BOOL bSuccess;
+
+	InterlockedIncrement(&g_callCounts[0x10D]);
+	bSuccess = ReadFile(hFile, lpBuffer, nNumberOfBytesToRead, &nRead, lpOverlapped);
+	if (lpNumberOfBytesRead)
+		*lpNumberOfBytesRead = nRead;
+
+	/* Unlike ReadFile, Storm fails short reads with ERROR_HANDLE_EOF */
+	if (bSuccess && nRead < nNumberOfBytesToRead)
+	{
+		SetLastError(ERROR_HANDLE_EOF);
+		return FALSE;
+	}
+
+	return bSuccess;
+}
 
 DWORD WINAPI SFileSetFilePointer(HANDLE hFile, long nDistanceToMove, long *lpDistanceToMoveHigh, DWORD dwMoveMethod)
-{ return Record(0x10F, (DWORD_PTR)hFile, (DWORD_PTR)nDistanceToMove, (DWORD_PTR)lpDistanceToMoveHigh, dwMoveMethod, 0, 0, 0); }
+{
+	InterlockedIncrement(&g_callCounts[0x10F]);
+	return SetFilePointer(hFile, nDistanceToMove, lpDistanceToMoveHigh, dwMoveMethod);
+}
 
 LONG WINAPI FakeStormCallCount(DWORD nOrdinal)
 {
