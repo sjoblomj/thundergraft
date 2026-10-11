@@ -3,9 +3,9 @@ THUNDERGRAFT
 What It Is
 ----------
 
-ThunderGraft is an MPQDraft plugin that adds additional music-playing capabilities to Diablo, Diablo II, StarCraft, and Warcraft II: Battle.net Edition. In addition to PCM WAV audio files, which are supported natively by these games (either used uncompressed or compressed via MPQ WAV compression, which is based on lossy ADPCM compression), ThunderGraft adds the ability to play newer, superior audio compression formats, including MPEG Layer-3 Audio (MP3), Ogg Vorbis (Ogg), Windows Media Audio (WMA) without DRM, and Free Lossless Audio Compression (FLAC); all of these give noticeably higher audio quality and (with the exception of FLAC) significantly smaller file sizes than MPQ WAV compression. ThunderGraft uses FMOD Ex for audio decoding, and as such supports all formats FMOD Ex supports out of the box; see File Format Support in http://www.fmod.org/index.php/products/fmodexdetailed for the full list.
+ThunderGraft is an MPQDraft plugin that adds additional music-playing capabilities to Diablo, Diablo II, StarCraft, and Warcraft II: Battle.net Edition. In addition to PCM WAV audio files, which are supported natively by these games (either used uncompressed or compressed via MPQ WAV compression, which is based on lossy ADPCM compression), ThunderGraft adds the ability to play newer, superior audio compression formats: MPEG Layer-3 Audio (MP3), Ogg Vorbis (Ogg), and Free Lossless Audio Codec (FLAC). All of these give noticeably higher audio quality and (with the exception of FLAC) significantly smaller file sizes than MPQ WAV compression. ThunderGraft uses miniaudio for decoding and playing audio.
 
-One additional feature of ThunderGraft is that it forces the host games to use 44 khz sound. All of the supported games set the sound card to output 22 khz 16-bit stereo audio (although some sound cards have been observed to ignore this and use a higher sampling rate), as that is what the games' sound effects and music all use. However, with superior compression formats available in ThunderGraft it may be desirable to also use higher sampling rate music for higher audio quality. ThunderGraft ensures that 44 khz quality will always be available.
+The supported games set the sound card to output 22 khz audio, as that is what their sound effects and music use. ThunderGraft plays music on an output device of its own, at the music's own sampling rate, so higher quality music is not held back by the games' settings.
 
 ThunderGraft is game- and version-independent. ThunderGraft is limited, however, to music and other streamed sounds, including StarCraft map trigger sounds; it does not work with sound effects that are not streamed.
 
@@ -14,19 +14,19 @@ How to Use It
 
 ThunderGraft is easy to use. Simply put the music files in an MPQ with WinMPQ or some other MPQ file editor (as with WAV files prior to ThunderGraft), then load the MPQ with MPQDraft and the ThunderGraft plugin; do NOT use WAV compression when importing non-PCM WAV files into an MPQ. Note that global music files, such as the opening themes of the various games, have hard-coded paths that require the audio files have a WAV extension; ThunderGraft does not rely on extension, and will play them correctly even if they are not actually WAV files.
 
-When running MPQDraft, ThunderGraft requires the fmodex.dll file to be in the system search path (e.g. Windows\System32 or the MPQDraft directory) or the same directory as the ThunderGraft plugin itself. This file is included in downloadable versions of ThunderGraft, but is separate to allow updates independently from ThunderGraft when new versions of FMOD Ex are released. This file is automatically incorporated into Self-Executing MPQs (SEMPQs) that use ThunderGraft, but may be overridden by a copy of fmodex.dll in the search path of the computer running the SEMPQ; in this way FMOD Ex may be updated even after the SEMPQ has already been created and downloaded.
+ThunderGraft is a single file, ThunderGraft.qdp, with no other files it depends on.
 
 Known Bugs/Side Effects
 -----------------------
 
-A peculiar bug in FireGraft prevents ThunderGraft from finding the fmodex.dll file in the same directory as the ThunderGraft plugin if this is not also the directory where FireGraft resides. For this reason, when using ThunderGraft with FireGraft this file must be in the FireGraft directory or the system search path. This problem only affects the FireGraft GUI, and does not affect SEMPQs created with FireGraft.
+None known.
 
 How It Works (Technical)
 ------------------------
 
 ThunderGraft targets the Storm DDA system (SFileDda). This system handles streaming sounds from archives and disc files. This system supports only PCM WAV audio files; StarCraft added support for lossy ADPCM compression by adding ADPCM compression as a fundamental MPQ compression type; despite being stored as ADPCM, readers see only the uncompressed PCM audio, which the streaming system plays.
 
-ThunderGraft works by simply replacing this system with its own (FMOD Ex). This involves hooking all calls to DDA functions, as well as a few other things. A DirectSound system is created by the game and then passed to SFileDdaInitialize; as FMOD Ex requires that it create the DirectSound system, DirectSoundCreate must be hooked as well.
+ThunderGraft works by simply replacing this system with its own, built on miniaudio. This involves hooking all calls to DDA functions in the game's import table, as well as GetProcAddress for games that look them up at runtime. The sounds are read through Storm, so they can come from MPQs or disc files as before, and are decoded and played on ThunderGraft's own output device. ThunderGraft's audio engine starts when the game initializes the DDA system; if it can't start, ThunderGraft passes everything on to Storm, and the game plays its music as it would without ThunderGraft.
 
 One optional feature of the DDA system is the ability for the caller (the game) to supply its own DirectSound buffer for use in streaming. This not only makes the DDA system use the settings on the buffer, but it also allows the game to modify things such as volume or to get the play state without calling the corresponding DDA function (e.g. IDirectSoundBuffer::SetVolume rather than SFileDdaSetVolume). This is emulated by watching for changes between the IDirectSoundBuffer and playing sound, and updating both as necessary.
 
@@ -34,6 +34,13 @@ For further information, see the source code.
 
 Update History
 --------------
+
+Unreleased:
+- Replaced FMOD Ex with miniaudio, which is open source and built into the plugin: there is no longer a separate fmodex.dll to ship or find
+- Plays music on an output device of its own, at the music's own sampling rate, so the 44 khz workaround is gone
+- Supported formats are now WAV, MP3, Ogg Vorbis and FLAC; WMA, AIFF, MP2, VAG, MIDI and tracker formats are no longer supported
+- Removed the StarEdit integration
+- Builds with GCC (mingw-w64) on Linux or Windows, with automated tests
 
 2011.7.25.1:
 - Fixed the problem where dialogue text in Diablo II would not properly appear when dialogue was set to audio and text
@@ -63,5 +70,13 @@ Credits
 -------
 
 Research, design, and coding: Justin Olbrantz (Quantam)
-Sound engine: Firelight Technologies Pty, Ltd.
+Sound engine: miniaudio, by David Reid
+Ogg Vorbis decoding: stb_vorbis, by Sean Barrett
 Logo: Joel Steudler
+
+Versions up to 2011.7.25.1 used FMOD Ex, by Firelight Technologies Pty, Ltd.
+
+License
+-------
+
+ThunderGraft is available under the Common Development and Distribution License (CDDL) 1.0. miniaudio is available as public domain or under the MIT No Attribution license, and stb_vorbis as public domain or under the MIT license; see third_party in the source code.
