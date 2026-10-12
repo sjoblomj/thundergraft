@@ -288,11 +288,12 @@ namespace
 		}
 	}
 
+	// Opens a file on disk through Storm, as the game would
 	HANDLE OpenFixtureFile(const char *lpszName)
 	{
 		std::string path = std::string("fixtures\\") + lpszName;
-		HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-		REQUIRE_MESSAGE(hFile != INVALID_HANDLE_VALUE, "Couldn't open " << path);
+		HANDLE hFile = NULL;
+		REQUIRE_MESSAGE(SFileOpenFileEx(NULL, path.c_str(), 0, &hFile), "Couldn't open " << path << ", error " << GetLastError());
 		return hFile;
 	}
 
@@ -452,4 +453,58 @@ TEST_CASE("Engine: files that aren't audio fail to play")
 		CHECK(SFileDdaBegin(hFile, 0x10000, 0) == FALSE);
 		CHECK(SFileCloseFile(hFile));
 	}
+}
+
+TEST_CASE("Engine: sounds play from an MPQ")
+{
+	EnsureEngineStarted();
+
+	const char *const lpszFixtures[] = { "fixtures\\wav_s16_44100_stereo.wav", "fixtures\\mp3_id3v2_120k.mp3", "fixtures\\ogg_vorbis_44100_stereo.ogg", "fixtures\\flac_16_44100_stereo.flac" };
+	char szTempPath[MAX_PATH] = "";
+	GetTempPathA(sizeof(szTempPath), szTempPath);
+	std::string archivePath = std::string(szTempPath) + "ThunderGraft test plugin_tests " + std::to_string(GetCurrentProcessId()) + ".mpq";
+	REQUIRE(FakeStormCreateArchive(archivePath.c_str(), lpszFixtures, 4));
+
+	HANDLE hMpq = NULL;
+	REQUIRE(SFileOpenArchive(archivePath.c_str(), 0, 0, &hMpq));
+
+	SUBCASE("Each format plays to its end")
+	{
+		for (const char *lpszName : { "wav_s16_44100_stereo.wav", "mp3_id3v2_120k.mp3", "ogg_vorbis_44100_stereo.ogg", "flac_16_44100_stereo.flac" })
+		{
+			std::string name = lpszName;
+			CAPTURE(name);
+
+			HANDLE hFile = NULL;
+			REQUIRE(SFileOpenFileEx(hMpq, lpszName, 0, &hFile));
+			REQUIRE(SFileDdaBegin(hFile, 0x10000, 0) == TRUE);
+
+			DWORD nLength = 0;
+			REQUIRE(SFileDdaGetPos(hFile, NULL, &nLength));
+			CHECK(nLength == 22050 * 4);
+			CHECK(WaitUntil(HasAdvanced, hFile));
+			CHECK(WaitUntil(HasFinished, hFile));
+
+			CHECK(SFileDdaEnd(hFile));
+			CHECK(SFileCloseFile(hFile));
+		}
+	}
+
+	SUBCASE("Closing a playing file from the archive waits until the sound is ended")
+	{
+		HANDLE hFile = NULL;
+		REQUIRE(SFileOpenFileEx(hMpq, "ogg_vorbis_44100_stereo.ogg", 0, &hFile));
+		REQUIRE(SFileDdaBegin(hFile, 0x10000, DDA_LOOPING) == TRUE);
+
+		LONG nCloseCalls = FakeStormCallCount(0xFD);
+		CHECK(SFileCloseFile(hFile));
+		CHECK(FakeStormCallCount(0xFD) == nCloseCalls);
+		CHECK(WaitUntil(HasAdvanced, hFile));
+
+		CHECK(SFileDdaEnd(hFile));
+		CHECK(FakeStormCallCount(0xFD) == nCloseCalls + 1);
+	}
+
+	CHECK(SFileCloseArchive(hMpq));
+	DeleteFileA(archivePath.c_str());
 }

@@ -6,3 +6,4 @@
 *.flac binary
 *.wav binary
 *.opus binary
+third_party/StormLib/** -text

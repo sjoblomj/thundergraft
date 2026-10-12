@@ -81,15 +81,30 @@ if(WIN32)
 		add_dependencies(${name}_import ${name}_import_library ${name})
 	endfunction()
 
-	# The DDA emulation, with a fake engine, fake Storm and fake DirectSound buffers; and with the real engine, measuring its output
+	# StormLib, for Storm file functions that read real MPQs, with its own copies of zlib and bzip2
+	set(STORM_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+	set(STORM_USE_BUNDLED_LIBRARIES ON CACHE BOOL "" FORCE)
+	set(CMAKE_DISABLE_FIND_PACKAGE_ZLIB ON)
+	set(CMAKE_DISABLE_FIND_PACKAGE_BZip2 ON)
+	add_subdirectory(${TG_THIRD_PARTY_DIR}/StormLib ${CMAKE_BINARY_DIR}/third_party/StormLib EXCLUDE_FROM_ALL)
+	# Third-party code; its warnings aren't ours
+	target_compile_options(storm PRIVATE -w)
+
+	add_library(mpq_storm STATIC fakes/MpqStorm.cpp)
+	target_include_directories(mpq_storm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${TG_SOURCE_DIR})
+	target_link_libraries(mpq_storm PUBLIC storm)
+	target_compile_options(mpq_storm PRIVATE -Wall -Wextra)
+
+	# The DDA emulation, with a fake engine, fake Storm and fake DirectSound buffers; and with the real engine, measuring its output, also with files read from MPQs
 	add_executable(dda_player_tests
 		test_main.cpp
 		dda_player_test.cpp
 		dda_output_test.cpp
+		dda_mpq_test.cpp
 		fakes/FakeStorm.cpp
 	)
 	add_dependencies(dda_player_tests test_fixtures)
-	target_link_libraries(dda_player_tests PRIVATE thundergraft_core doctest)
+	target_link_libraries(dda_player_tests PRIVATE thundergraft_core mpq_storm doctest)
 	target_link_options(dda_player_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	tg_add_test(dda_player_tests)
 
@@ -104,8 +119,10 @@ if(WIN32)
 	target_link_options(hook_api_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	tg_add_test(hook_api_tests)
 
-	# The built plugin, loaded into a stand-in for a game with a fake Storm.dll
-	tg_add_helper_dll(fake_storm Storm ${CMAKE_CURRENT_SOURCE_DIR}/helpers/fake_storm.def helpers/fake_storm.c)
+	# The built plugin, loaded into a stand-in for a game with a fake Storm.dll, whose file functions are StormLib's
+	tg_add_helper_dll(fake_storm Storm ${CMAKE_CURRENT_SOURCE_DIR}/helpers/fake_storm.def helpers/fake_storm.cpp)
+	target_link_libraries(fake_storm PRIVATE mpq_storm)
+	target_link_options(fake_storm PRIVATE ${TG_TEST_LINK_OPTIONS})
 
 	add_executable(plugin_tests test_main.cpp plugin_test.cpp)
 	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import doctest)

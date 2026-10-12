@@ -200,7 +200,19 @@ Behaviour changes in the DDA emulation, deliberate:
 
 ## Later
 
-- [ ] A fake Storm backed by StormLib (MIT), to test files read from real MPQs.
+- [x] Storm file functions backed by StormLib 9.40 (MIT, vendored, tests only),
+      to test files read from real MPQs:
+  - `tests/fakes/MpqStorm.*` wraps StormLib, locked for use from several threads,
+    and failing on unknown handles rather than crashing as StormLib does.
+  - `dda_player_tests` plays every format from MPQs made during the test, stored
+    uncompressed, imploded, PKWARE, zlib and bzip2 compressed, encrypted (with and
+    without the adjusted key), as a single unit, and with sector checksums, plus
+    a WAV compressed with ADPCM and Huffman coding; and measures the output.
+  - The fake `Storm.dll` now uses StormLib for its file functions, and also
+    exports `SFileOpenArchive`, `SFileOpenFileEx` and `SFileCloseArchive` at
+    Storm's ordinals, so `plugin_tests` opens files the way a game does.
+  - Not done: tests against the games' own MPQs, which can't be committed. They
+    could be run on request, with the archives' paths in an environment variable.
 - [ ] CI: build, native tests and Wine tests on every push.
 
 ## Not planned
