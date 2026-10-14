@@ -25,7 +25,12 @@ FAKE_STORM_API BOOL WINAPI SFileOpenArchive(LPCSTR lpszArchiveName, DWORD dwPrio
 FAKE_STORM_API BOOL WINAPI SFileOpenFileEx(HANDLE hMpq, LPCSTR lpszFileName, DWORD dwSearchScope, HANDLE *phFile);
 FAKE_STORM_API BOOL WINAPI SFileReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped);
 FAKE_STORM_API DWORD WINAPI SFileSetFilePointer(HANDLE hFile, long nDistanceToMove, long *lpDistanceToMoveHigh, DWORD dwMoveMethod);
+/* The archive a file was opened from; NULL for files on disk */
+FAKE_STORM_API BOOL WINAPI SFileGetFileArchive(HANDLE hFile, HANDLE *phMpq);
 #endif
+
+/* Searches every archive, by priority, then the disk */
+FAKE_STORM_API BOOL WINAPI SFileOpenFile(LPCSTR lpszFileName, HANDLE *phFile);
 
 FAKE_STORM_API BOOL WINAPI SFileDdaBegin(HANDLE hFile, DWORD dwWAVBufferSize, DWORD dwFlags);
 FAKE_STORM_API BOOL WINAPI SFileDdaBeginEx(HANDLE hFile, DWORD dwWAVBufferSize, DWORD dwFlags, DWORD dwWAVReadPtr, long nVolume, long nPanPos, IDirectSoundBuffer *lpSoundBuffer);
@@ -43,6 +48,8 @@ FAKE_STORM_API BOOL WINAPI SFileDdaSetVolume(HANDLE hFile, long nVolume, long nP
 FAKE_STORM_API LONG WINAPI FakeStormCallCount(DWORD nOrdinal);
 /* Makes an MPQ holding the files on disk, each imploded and encrypted, under its name without the directory */
 FAKE_STORM_API BOOL WINAPI FakeStormCreateArchive(LPCSTR lpszArchiveName, const LPCSTR *lplpszFiles, DWORD nFiles);
+/* The same, with the names to store them under, such as music\title.wav */
+FAKE_STORM_API BOOL WINAPI FakeStormCreateArchiveEx(LPCSTR lpszArchiveName, const LPCSTR *lplpszFiles, const LPCSTR *lplpszArchivedNames, DWORD nFiles);
 /* The arguments of the last call to any SFile function, as pointer-sized integers */
 FAKE_STORM_API void WINAPI FakeStormLastArgs(DWORD_PTR args[7]);
 

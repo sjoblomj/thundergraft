@@ -108,6 +108,7 @@ if(WIN32)
 		dda_player_test.cpp
 		dda_output_test.cpp
 		dda_mpq_test.cpp
+		dda_playlist_test.cpp
 		fakes/FakeStorm.cpp
 	)
 	add_dependencies(dda_player_tests test_fixtures)
@@ -131,7 +132,7 @@ if(WIN32)
 	target_link_libraries(fake_storm PRIVATE mpq_storm)
 	target_link_options(fake_storm PRIVATE ${TG_TEST_LINK_OPTIONS})
 
-	add_executable(plugin_tests test_main.cpp plugin_test.cpp)
+	add_executable(plugin_tests test_main.cpp plugin_test.cpp ${TG_COMMON_DIR}/QHookAPI.cpp)
 	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import doctest)
 	target_link_options(plugin_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	target_compile_definitions(plugin_tests PRIVATE TG_PLUGIN_FILE="$<TARGET_FILE_NAME:ThunderGraft>")
@@ -141,16 +142,26 @@ if(WIN32)
 	add_dependencies(plugin_tests ThunderGraft test_fixtures)
 
 	# Without an audio engine: everything is forwarded to Storm
-	tg_add_test(plugin_tests --test-case-exclude=Engine:*)
+	tg_add_test(plugin_tests "--test-case-exclude=Engine:*,Broken playlist:*,Late playlist:*")
 	set_property(TEST plugin_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=none)
 
-	# With the audio engine on a null output device: the plugin plays the sounds itself
+	# With the audio engine on a null output device: the plugin plays the sounds itself, and playlists, writing every transition to ThunderGraft.log
 	add_test(NAME plugin_engine_tests COMMAND plugin_tests --test-case=Engine:*)
-	set_tests_properties(plugin_engine_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} TIMEOUT 120)
-	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
-		set_tests_properties(plugin_engine_tests PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
-	endif()
-	set_property(TEST plugin_engine_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=null)
+	# With a base playlist file that has an error
+	add_test(NAME plugin_playlist_error_tests COMMAND plugin_tests "--test-case=Broken playlist:*")
+	# With the base playlist file in an archive opened after the engine has started
+	add_test(NAME plugin_late_playlist_tests COMMAND plugin_tests "--test-case=Late playlist:*")
+	foreach(test plugin_engine_tests plugin_playlist_error_tests plugin_late_playlist_tests)
+		# Both write ThunderGraft.log next to the test program
+		set_tests_properties(${test} PROPERTIES WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} TIMEOUT 120 RESOURCE_LOCK thundergraft_log)
+		if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+			set_tests_properties(${test} PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
+		endif()
+		set_property(TEST ${test} APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=null)
+	endforeach()
+	set_property(TEST plugin_engine_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_LOG=transitions)
+	set_property(TEST plugin_playlist_error_tests APPEND PROPERTY ENVIRONMENT TG_TEST_BROKEN_PLAYLIST=1)
+	set_property(TEST plugin_late_playlist_tests APPEND PROPERTY ENVIRONMENT TG_TEST_LATE_PLAYLIST=1 THUNDERGRAFT_LOG=transitions)
 
 	# What the plugin DLL exports and imports
 	find_program(TG_OBJDUMP NAMES ${CMAKE_OBJDUMP} i686-w64-mingw32-objdump objdump)

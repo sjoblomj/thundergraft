@@ -72,11 +72,24 @@ extern "C" DWORD WINAPI FakeSFileGetFileSize(HANDLE hFile, LPDWORD lpFileSizeHig
 	return MpqStorm::Functions().SFileGetFileSize(hFile, lpFileSizeHigh);
 }
 
-extern "C" BOOL WINAPI FakeSFileOpenArchive(LPCSTR lpszArchiveName, DWORD, DWORD, HANDLE *phMpq)
+extern "C" BOOL WINAPI FakeSFileOpenArchive(LPCSTR lpszArchiveName, DWORD dwPriority, DWORD, HANDLE *phMpq)
 {
 	InterlockedIncrement(&g_callCounts[0x10A]);
-	*phMpq = MpqStorm::OpenArchive(lpszArchiveName);
+	*phMpq = MpqStorm::OpenArchive(lpszArchiveName, dwPriority);
 	return *phMpq != NULL;
+}
+
+BOOL WINAPI SFileOpenFile(LPCSTR lpszFileName, HANDLE *phFile)
+{
+	InterlockedIncrement(&g_callCounts[0x10B]);
+	*phFile = MpqStorm::OpenFile(NULL, lpszFileName);
+	return *phFile != NULL;
+}
+
+extern "C" BOOL WINAPI FakeSFileGetFileArchive(HANDLE hFile, HANDLE *phMpq)
+{
+	InterlockedIncrement(&g_callCounts[0x108]);
+	return MpqStorm::GetFileArchive(hFile, phMpq);
 }
 
 extern "C" BOOL WINAPI FakeSFileOpenFileEx(HANDLE hMpq, LPCSTR lpszFileName, DWORD, HANDLE *phFile)
@@ -100,13 +113,18 @@ extern "C" DWORD WINAPI FakeSFileSetFilePointer(HANDLE hFile, long nDistanceToMo
 
 BOOL WINAPI FakeStormCreateArchive(LPCSTR lpszArchiveName, const LPCSTR *lplpszFiles, DWORD nFiles)
 {
+	return FakeStormCreateArchiveEx(lpszArchiveName, lplpszFiles, NULL, nFiles);
+}
+
+BOOL WINAPI FakeStormCreateArchiveEx(LPCSTR lpszArchiveName, const LPCSTR *lplpszFiles, const LPCSTR *lplpszArchivedNames, DWORD nFiles)
+{
 	std::vector<MpqStorm::ArchivedFile> files;
 	for (DWORD iFile = 0; iFile < nFiles; iFile++)
 	{
 		std::string path = lplpszFiles[iFile];
 		MpqStorm::ArchivedFile file;
 		file.localPath = path;
-		file.archivedName = path.substr(path.find_last_of("\\/") + 1);
+		file.archivedName = lplpszArchivedNames ? lplpszArchivedNames[iFile] : path.substr(path.find_last_of("\\/") + 1);
 		file.dwFlags = MPQ_FILE_IMPLODE | MPQ_FILE_ENCRYPTED;
 		file.dwCompression = 0;
 		file.dwCompressionNext = 0;

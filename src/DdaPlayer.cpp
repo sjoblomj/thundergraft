@@ -8,6 +8,7 @@
 
 #include "DdaPlayer.h"
 #include "DdaConversions.h"
+#include "PlaylistPath.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -37,13 +38,21 @@ namespace
 	private:
 		HANDLE m_hSFile;
 		STORMFILEFUNCTIONS m_storm;
+		// Files ThunderGraft opened itself, for playlists, are closed with the sound; the game's are the game's
+		bool m_bOwnsFile;
 
 	public:
-		CStormAudioFile(HANDLE hSFile, const STORMFILEFUNCTIONS &storm)
-			: m_hSFile(hSFile), m_storm(storm)
+		CStormAudioFile(HANDLE hSFile, const STORMFILEFUNCTIONS &storm, bool bOwnsFile = false)
+			: m_hSFile(hSFile), m_storm(storm), m_bOwnsFile(bOwnsFile)
 		{
 			// The game may have read from the file before handing it to us
 			m_storm.SFileSetFilePointer(m_hSFile, 0, NULL, FILE_BEGIN);
+		}
+
+		virtual ~CStormAudioFile()
+		{
+			if (m_bOwnsFile)
+				m_storm.SFileCloseFile(m_hSFile);
 		}
 
 		virtual bool Read(void *lpBuffer, size_t nBytes, size_t *lpnBytesRead)
@@ -104,12 +113,125 @@ namespace
 			return true;
 		}
 	};
+
+	// Reads a file on disk, for playlist tracks with absolute paths, which a playlist file on disk may name
+	class CDiskAudioFile : public IAudioFile
+	{
+	private:
+		HANDLE m_hFile;
+
+	public:
+		explicit CDiskAudioFile(HANDLE hFile) : m_hFile(hFile) {}
+
+		virtual ~CDiskAudioFile()
+		{ CloseHandle(m_hFile); }
+
+		static std::unique_ptr<IAudioFile> Open(const std::string &path)
+		{
+			HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+			if (hFile == INVALID_HANDLE_VALUE)
+				return nullptr;
+
+			std::unique_ptr<IAudioFile> lpFile(new (std::nothrow) CDiskAudioFile(hFile));
+			if (!lpFile)
+				CloseHandle(hFile);
+
+			return lpFile;
+		}
+
+		virtual bool Read(void *lpBuffer, size_t nBytes, size_t *lpnBytesRead)
+		{
+			assert(lpnBytesRead);
+
+			if (nBytes > MAXDWORD)
+				nBytes = MAXDWORD;
+
+			DWORD nBytesRead = 0;
+			if (!ReadFile(m_hFile, lpBuffer, (DWORD)nBytes, &nBytesRead, NULL))
+				return false;
+
+			*lpnBytesRead = nBytesRead;
+			return true;
+		}
+
+		virtual bool Seek(int64_t nOffset, AudioSeekOrigin origin)
+		{
+			LARGE_INTEGER offset;
+			offset.QuadPart = nOffset;
+			DWORD dwMoveMethod = (origin == AUDIO_SEEK_CURRENT) ? FILE_CURRENT : (origin == AUDIO_SEEK_END) ? FILE_END : FILE_BEGIN;
+			return SetFilePointerEx(m_hFile, offset, NULL, dwMoveMethod) != FALSE;
+		}
+
+		virtual bool Tell(int64_t *lpnPosition)
+		{
+			LARGE_INTEGER zero, position;
+			zero.QuadPart = 0;
+			if (!SetFilePointerEx(m_hFile, zero, &position, FILE_CURRENT))
+				return false;
+
+			*lpnPosition = position.QuadPart;
+			return true;
+		}
+
+		virtual bool GetSize(uint64_t *lpnSize)
+		{
+			LARGE_INTEGER size;
+			if (!GetFileSizeEx(m_hFile, &size))
+				return false;
+
+			*lpnSize = (uint64_t)size.QuadPart;
+			return true;
+		}
+	};
+
+	// How the playlist player opens files: tracks through Storm, as the game opens its own, so they can be in archives or on disk; the game's files through the game's handles
+	class CStormPlaylistFiles : public IPlaylistFiles
+	{
+	private:
+		STORMFILEFUNCTIONS m_storm;
+
+	public:
+		explicit CStormPlaylistFiles(const STORMFILEFUNCTIONS &storm) : m_storm(storm) {}
+
+		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path)
+		{
+			// The playlist file's reader only lets files on disk name absolute paths. Storm might not open those, so they're opened directly.
+			if (IsAbsolutePlaylistPath(path))
+				return CDiskAudioFile::Open(path);
+
+			if (!m_storm.SFileOpenFileEx)
+				return nullptr;
+
+			HANDLE hFile = NULL;
+			if (!m_storm.SFileOpenFileEx(NULL, PlaylistPathForStorm(path).c_str(), 0, &hFile) || !hFile)
+				return nullptr;
+
+			std::unique_ptr<IAudioFile> lpFile(new (std::nothrow) CStormAudioFile(hFile, m_storm, true));
+			if (!lpFile)
+				m_storm.SFileCloseFile(hFile);
+
+			return lpFile;
+		}
+
+		virtual std::unique_ptr<IAudioFile> OpenGameFile(PlaylistStreamId id)
+		{
+			return std::unique_ptr<IAudioFile>(new (std::nothrow) CStormAudioFile((HANDLE)id, m_storm));
+		}
+	};
+
+	PlaylistStreamId StreamId(HANDLE hSFile)
+	{
+		return (PlaylistStreamId)hSFile;
+	}
 }
 
 CDdaPlayer::CDdaPlayer()
 {
 	memset(&m_storm, 0, sizeof(m_storm));
 	m_lpEngine = NULL;
+	m_lpNames = NULL;
+	m_nLastTick = 0;
+	m_nNow = 0;
 	m_bActivated = TRUE;
 
 	InitializeCriticalSection(&m_csLock);
@@ -118,11 +240,11 @@ CDdaPlayer::CDdaPlayer()
 CDdaPlayer::~CDdaPlayer()
 {
 	// The player lives in a global object, so this runs inside DllMain when the process exits. Destroying sounds there could deadlock waiting for the audio engine's threads, so we deliberately leave anything still playing for Windows to clean up with the process. Callers that want sounds stopped call StopAll first.
-	for (PlayingSoundMap::iterator itSound = m_playingSoundMap.begin(); itSound != m_playingSoundMap.end(); itSound++)
-		itSound->second.lpSound.release();
+	m_playlist.Abandon();
+	m_lpFiles.release();
 }
 
-void CDdaPlayer::Initialize(IN const STORMFILEFUNCTIONS &storm, IN IAudioEngine *lpEngine)
+void CDdaPlayer::Initialize(IN const STORMFILEFUNCTIONS &storm, IN IAudioEngine *lpEngine, OPTIONAL IN CStormFileNames *lpNames, OPTIONAL IN IPlaylistLog *lpLog)
 {
 	assert(storm.SFileCloseFile && storm.SFileReadFile && storm.SFileGetFileSize && storm.SFileSetFilePointer);
 	assert(lpEngine);
@@ -131,6 +253,40 @@ void CDdaPlayer::Initialize(IN const STORMFILEFUNCTIONS &storm, IN IAudioEngine 
 
 	m_storm = storm;
 	m_lpEngine = lpEngine;
+	m_lpNames = lpNames;
+	m_lpFiles.reset(new CStormPlaylistFiles(storm));
+
+	// Shuffles differ from one session to the next
+	LARGE_INTEGER counter;
+	QueryPerformanceCounter(&counter);
+	uint64_t nSeed = (uint64_t)counter.QuadPart ^ ((uint64_t)GetCurrentProcessId() << 32) ^ GetTickCount();
+
+	m_playlist.Initialize(lpEngine, m_lpFiles.get(), lpLog, nSeed);
+	m_nLastTick = GetTickCount();
+}
+
+void CDdaPlayer::SetBasePlaylist(IN std::shared_ptr<const PlaylistFile> base)
+{
+	CLock lock(m_csLock);
+	m_playlist.SetBase(base);
+}
+
+BOOL CDdaPlayer::MapPlaylistsAllowed()
+{
+	CLock lock(m_csLock);
+	return m_playlist.MapPlaylistsAllowed();
+}
+
+BOOL CDdaPlayer::PushMapPlaylist(IN HANDLE hMpq, IN std::shared_ptr<const PlaylistFile> map)
+{
+	CLock lock(m_csLock);
+	return m_playlist.PushMap((uintptr_t)hMpq, map);
+}
+
+BOOL CDdaPlayer::PopMapPlaylist(IN HANDLE hMpq)
+{
+	CLock lock(m_csLock);
+	return m_playlist.PopMap((uintptr_t)hMpq);
 }
 
 BOOL CDdaPlayer::Begin(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD dwBufferBytes, OPTIONAL IN DWORD dwStartPosBytes, OPTIONAL IN long nVolume, OPTIONAL IN long nPanPos, OPTIONAL IN IDirectSoundBuffer *lpSoundBuffer)
@@ -204,45 +360,49 @@ BOOL CDdaPlayer::Begin(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD dwBufferByte
 		}
 	}
 
-	// Open the stream. Essentially this opens the file in preparation for playing.
-	std::unique_ptr<IAudioFile> lpFile(new (std::nothrow) CStormAudioFile(hSFile, m_storm));
-	if (!lpFile)
-		return FALSE;
-
-	newSound.lpSound = m_lpEngine->OpenSound(std::move(lpFile), (dwFlags & SFILE_DDA_LOOPING) != 0);
-	QDebugWriteEntry("CDdaPlayer::Begin : OpenSound returned %p", newSound.lpSound.get());
-	if (!newSound.lpSound)
-		return FALSE;
-
-	IAudioSound &sound = *newSound.lpSound;
-
-	if (dwStartPosBytes)
-		sound.SeekToFrame(DdaBytesToFrames(dwStartPosBytes, sound.GetChannels()));
-
 	newSound.nVolume = (nVolume != SFILE_DDA_DEFAULT ? nVolume : DDA_VOLUME_MAX);
 	newSound.nPanPos = (nPanPos != SFILE_DDA_DEFAULT ? nPanPos : 0);
 	newSound.nFrequency = nFrequency;
 
-	sound.SetVolume(DdaVolumeToLinear(newSound.nVolume));
-	sound.SetPan(DdaPanToLinear(newSound.nPanPos));
+	PlaylistStreamSettings settings;
+	settings.nVolume = DdaVolumeToLinear(newSound.nVolume);
+	settings.nPan = DdaPanToLinear(newSound.nPanPos);
 	if (lpSoundBuffer && nFrequency != SFILE_DDA_DEFAULT)
-		sound.SetPitch(DdaPitchRatio(nFrequency, newSound.nBufferFrequency));
-	if (!newSound.bGlobal && !m_bActivated)
-		sound.SetMuted(true);
+		settings.nPitch = DdaPitchRatio(nFrequency, newSound.nBufferFrequency);
+	settings.bMuted = !newSound.bGlobal && !m_bActivated;
 
 	QDebugWriteEntry("CDdaPlayer::Begin : Final volume %ld, pan %ld, frequency %lu, is %sglobal", newSound.nVolume, newSound.nPanPos, newSound.nFrequency, (newSound.bGlobal ? "" : "not "));
 
-	if (!sound.Start())
-		return FALSE;
+	// The name the game opened the file with decides whether a playlist plays in its place. A file whose name isn't known plays as the game asked.
+	std::string name;
+	bool bHasName = false;
+	try
+	{ bHasName = m_lpNames && m_lpNames->Lookup(hSFile, &name); }
+	catch (...)
+	{ bHasName = false; }
 
-	// The sound is playing fine. Add it to the list and we're done. If that fails, the sound is destroyed (and so stopped) on the way out.
+	try
+	{
+		if (!m_playlist.Begin(StreamId(hSFile), bHasName ? &name : NULL, (dwFlags & SFILE_DDA_LOOPING) != 0, dwStartPosBytes, settings))
+			return FALSE;
+	}
+	catch (...)
+	{
+		m_playlist.End(StreamId(hSFile));
+		return FALSE;
+	}
+
+	// The sound is playing fine. Add it to the list and we're done. If that fails, the sound is ended on the way out.
 	try
 	{
 		newSound.lpSoundBuffer = lpSoundBuffer;
 		m_playingSoundMap.emplace(hSFile, std::move(newSound));
 	}
 	catch (...)
-	{ return FALSE; }
+	{
+		m_playlist.End(StreamId(hSFile));
+		return FALSE;
+	}
 
 	if (lpSoundBuffer)
 	{
@@ -291,9 +451,9 @@ BOOL CDdaPlayer::StopSound(IN HANDLE hSFile)
 		(void)nRefCount;
 	}
 
-	// Destroy the sound, then close the file if the game already tried to. The sound has to go first, as it reads from the file.
+	// End the stream, then close the file if the game already tried to. The sounds have to go first, as they read from the file.
 	BOOL bCloseOnStop = sound.bCloseOnStop;
-	sound.lpSound.reset();
+	m_playlist.End(StreamId(hSFile));
 	m_playingSoundMap.erase(itSound);
 
 	if (bCloseOnStop)
@@ -324,18 +484,18 @@ BOOL CDdaPlayer::GetPos(IN HANDLE hSFile, OPTIONAL OUT LPDWORD lpdwCurPos, OPTIO
 	if (itSound == m_playingSoundMap.end())
 		return FALSE;
 
-	// If the sound has finished, return false to communicate this
-	IAudioSound &sound = *itSound->second.lpSound;
-	uint64_t nCurPos, nLength;
-	if (!sound.IsPlaying() || !sound.GetCursor(&nCurPos))
+	// If the sound has finished, return false to communicate this. With a playlist, that's when its visit ends rather than any one track; the position and length are the current track's.
+	PlaylistStreamPosition position;
+	if (!m_playlist.IsPlaying(StreamId(hSFile)) || !m_playlist.GetPosition(StreamId(hSFile), &position))
 		return FALSE;
 
 	// For some files the length is only approximate or not known at all. That means it's possible that the current position >= the length. Need to handle this case to make sure the position is always < the length in the values we return.
-	if (!sound.GetLength(&nLength) || nCurPos >= nLength)
+	uint64_t nCurPos = position.nFrame, nLength = position.nLength;
+	if (!position.bLengthKnown || nCurPos >= nLength)
 		nLength = nCurPos + 1;
 
-	uint64_t nCurPosBytes = DdaFramesToBytes(nCurPos, sound.GetChannels()),
-		nLengthBytes = DdaFramesToBytes(nLength, sound.GetChannels());
+	uint64_t nCurPosBytes = DdaFramesToBytes(nCurPos, position.nChannels),
+		nLengthBytes = DdaFramesToBytes(nLength, position.nChannels);
 
 	// The DDA functions can't express positions beyond 4 GB of PCM, about 7 hours of 44 khz stereo
 	if (nLengthBytes > MAXDWORD)
@@ -389,14 +549,14 @@ BOOL CDdaPlayer::SetVolume(IN HANDLE hSFile, OPTIONAL IN long nVolume, OPTIONAL 
 	if (nVolume != SFILE_DDA_DEFAULT)
 	{
 		sound.nVolume = nVolume;
-		sound.lpSound->SetVolume(DdaVolumeToLinear(nVolume));
+		m_playlist.SetVolume(StreamId(hSFile), DdaVolumeToLinear(nVolume));
 		if (sound.lpSoundBuffer)
 			sound.lpSoundBuffer->SetVolume(nVolume);
 	}
 	if (nPanPos != SFILE_DDA_DEFAULT)
 	{
 		sound.nPanPos = nPanPos;
-		sound.lpSound->SetPan(DdaPanToLinear(nPanPos));
+		m_playlist.SetPan(StreamId(hSFile), DdaPanToLinear(nPanPos));
 		if (sound.lpSoundBuffer)
 			sound.lpSoundBuffer->SetPan(nPanPos);
 	}
@@ -425,12 +585,12 @@ BOOL CDdaPlayer::CloseFile(IN HANDLE hSFile)
 	return m_storm.SFileCloseFile(hSFile);
 }
 
-void CDdaPlayer::UpdateSound(IN PLAYINGSOUND &sound)
+void CDdaPlayer::UpdateSound(IN HANDLE hSFile, IN PLAYINGSOUND &sound)
 {
 	if (!sound.bIsPlaying)
 		return;
 
-	if (!sound.lpSound->IsPlaying())
+	if (!m_playlist.IsPlaying(StreamId(hSFile)))
 	{
 		// The sound just stopped playing. Update our state as necessary. If we have a IDirectSoundBuffer, stop it so the game can see the sound is done.
 		QDebugWriteEntry("CDdaPlayer::UpdateSound : Sound has completed");
@@ -454,7 +614,7 @@ void CDdaPlayer::UpdateSound(IN PLAYINGSOUND &sound)
 		{
 			QDebugWriteEntry("CDdaPlayer::UpdateSound : Updating volume from %ld to %ld", sound.nVolume, nVolume);
 
-			sound.lpSound->SetVolume(DdaVolumeToLinear(nVolume));
+			m_playlist.SetVolume(StreamId(hSFile), DdaVolumeToLinear(nVolume));
 			sound.nVolume = nVolume;
 		}
 		if (SUCCEEDED(sound.lpSoundBuffer->GetPan(&nPanPos)) &&
@@ -462,7 +622,7 @@ void CDdaPlayer::UpdateSound(IN PLAYINGSOUND &sound)
 		{
 			QDebugWriteEntry("CDdaPlayer::UpdateSound : Updating panning from %ld to %ld", sound.nPanPos, nPanPos);
 
-			sound.lpSound->SetPan(DdaPanToLinear(nPanPos));
+			m_playlist.SetPan(StreamId(hSFile), DdaPanToLinear(nPanPos));
 			sound.nPanPos = nPanPos;
 		}
 		if (SUCCEEDED(sound.lpSoundBuffer->GetFrequency(&nFrequency)) &&
@@ -470,7 +630,7 @@ void CDdaPlayer::UpdateSound(IN PLAYINGSOUND &sound)
 		{
 			QDebugWriteEntry("CDdaPlayer::UpdateSound : Updating frequency from %lu to %lu", sound.nFrequency, nFrequency);
 
-			sound.lpSound->SetPitch(DdaPitchRatio(nFrequency, sound.nBufferFrequency));
+			m_playlist.SetPitch(StreamId(hSFile), DdaPitchRatio(nFrequency, sound.nBufferFrequency));
 			sound.nFrequency = nFrequency;
 		}
 	}
@@ -484,15 +644,26 @@ void CDdaPlayer::Update(IN BOOL bActivated)
 	if (bActivationChanged)
 		QDebugWriteEntry("CDdaPlayer::Update : Activation status changed from %d to %d", m_bActivated, bActivated);
 
+	// Playlists move on to their next tracks, and fades finish. GetTickCount wraps every 49 days; the difference doesn't.
+	DWORD nTick = GetTickCount();
+	m_nNow += (DWORD)(nTick - m_nLastTick);
+	m_nLastTick = nTick;
+	try
+	{ m_playlist.Update(m_nNow); }
+	catch (...)
+	{
+		// Out of memory; try again next time
+	}
+
 	for (PlayingSoundMap::iterator itSound = m_playingSoundMap.begin(); itSound != m_playingSoundMap.end(); itSound++)
 	{
 		PLAYINGSOUND &sound = itSound->second;
 
-		UpdateSound(sound);
+		UpdateSound(itSound->first, sound);
 
 		// Mute/unmute non-global sounds
 		if (bActivationChanged && !sound.bGlobal)
-			sound.lpSound->SetMuted(!bActivated);
+			m_playlist.SetMuted(StreamId(itSound->first), !bActivated);
 	}
 
 	m_bActivated = bActivated;

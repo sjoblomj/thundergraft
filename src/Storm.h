@@ -17,6 +17,7 @@
 #include <dsound.h>
 
 // Ordinals of the Storm functions we hook and/or use internally
+#define STORM_ORDINAL_SFILECLOSEARCHIVE 0xFC
 #define STORM_ORDINAL_SFILECLOSEFILE 0xFD
 #define STORM_ORDINAL_SFILEDDABEGIN 0xFE
 #define STORM_ORDINAL_SFILEDDABEGINEX 0xFF
@@ -26,11 +27,23 @@
 #define STORM_ORDINAL_SFILEDDAGETVOLUME 0x103
 #define STORM_ORDINAL_SFILEDDAINITIALIZE 0x104
 #define STORM_ORDINAL_SFILEDDASETVOLUME 0x105
+#define STORM_ORDINAL_SFILEGETFILEARCHIVE 0x108
 #define STORM_ORDINAL_SFILEGETFILESIZE 0x109
+#define STORM_ORDINAL_SFILEOPENARCHIVE 0x10A
+#define STORM_ORDINAL_SFILEOPENFILE 0x10B
+#define STORM_ORDINAL_SFILEOPENFILEEX 0x10C
 #define STORM_ORDINAL_SFILEREADFILE 0x10D
 #define STORM_ORDINAL_SFILESETFILEPOINTER 0x10F
 
 typedef BOOL (WINAPI *SFileCloseFilePtr)(IN HANDLE hFile);
+
+typedef BOOL (WINAPI *SFileOpenArchivePtr)(IN LPCSTR lpszArchiveName, IN DWORD dwPriority, IN DWORD dwFlags, OUT HANDLE *lphMpq);
+typedef BOOL (WINAPI *SFileCloseArchivePtr)(IN HANDLE hMpq);
+typedef BOOL (WINAPI *SFileOpenFilePtr)(IN LPCSTR lpszFileName, OUT HANDLE *lphFile);
+// Without an archive, searches every archive by priority, then the disk. With one, only that archive is meant to be searched, but MPQDraft's redirection makes even those calls search every archive.
+typedef BOOL (WINAPI *SFileOpenFileExPtr)(OPTIONAL IN HANDLE hMpq, IN LPCSTR lpszFileName, IN DWORD dwSearchScope, OUT HANDLE *lphFile);
+// The archive a file was opened from. Fails, or gives NULL, for files opened from disk.
+typedef BOOL (WINAPI *SFileGetFileArchivePtr)(IN HANDLE hFile, OUT HANDLE *lphMpq);
 
 typedef BOOL (WINAPI *SFileReadFilePtr)(IN HANDLE hFile, IN LPVOID lpBuffer, IN DWORD nNumberOfBytesToRead, OUT LPDWORD lpNumberOfBytesRead, OPTIONAL IN LPOVERLAPPED lpOverlapped);
 typedef DWORD (WINAPI *SFileGetFileSizePtr)(IN HANDLE hFile, OPTIONAL OUT LPDWORD lpFileSizeHigh);
@@ -56,13 +69,15 @@ typedef BOOL (WINAPI *SFileDdaSetVolumePtr)(IN HANDLE hFile, OPTIONAL IN long nV
 #define SFILE_DDA_CTRLFREQUENCY DSBCAPS_CTRLFREQUENCY
 #define SFILE_DDA_LOOPING 0x40000
 
-// The Storm file functions the DDA emulation needs to read and close files
+// The Storm file functions the DDA emulation needs to read and close files, and to open the tracks of playlists
 struct STORMFILEFUNCTIONS
 {
 	SFileCloseFilePtr SFileCloseFile;
 	SFileReadFilePtr SFileReadFile;
 	SFileGetFileSizePtr SFileGetFileSize;
 	SFileSetFilePointerPtr SFileSetFilePointer;
+	// May be NULL, in which case no playlist track can be opened
+	SFileOpenFileExPtr SFileOpenFileEx;
 };
 
 #endif // #ifndef STORM_H

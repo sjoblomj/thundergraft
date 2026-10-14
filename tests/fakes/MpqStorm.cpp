@@ -2,14 +2,37 @@
 
 #include <StormLib.h>
 
+#include <algorithm>
+
+#include <map>
 #include <set>
+#include <vector>
 
 namespace
 {
+	struct ArchiveEntry
+	{
+		HANDLE hMpq;
+		DWORD dwPriority;
+	};
+
 	// StormLib isn't safe to use from several threads at once, and the plugin reads from its own threads while the game opens files. An SRW lock, as releasing it leaves the last error alone, which the functions report through.
 	SRWLOCK g_lock = SRWLOCK_INIT;
-	std::set<HANDLE> g_archives;
-	std::set<HANDLE> g_files;
+	// In the order they were opened
+	std::vector<ArchiveEntry> g_archives;
+	// Each open file, and the archive it is from (NULL for files on disk)
+	std::map<HANDLE, HANDLE> g_files;
+
+	// Call with the lock held
+	bool IsOpenArchive(HANDLE hMpq)
+	{
+		for (const ArchiveEntry &archive : g_archives)
+		{
+			if (archive.hMpq == hMpq)
+				return true;
+		}
+		return false;
+	}
 
 	class CGuard
 	{
@@ -66,6 +89,15 @@ namespace
 	}
 }
 
+namespace
+{
+	BOOL WINAPI MpqOpenFileEx(HANDLE hMpq, LPCSTR lpszName, DWORD, HANDLE *lphFile)
+	{
+		*lphFile = MpqStorm::OpenFile(hMpq, lpszName);
+		return *lphFile != NULL;
+	}
+}
+
 namespace MpqStorm
 {
 	bool CreateArchive(const std::string &path, const std::vector<ArchivedFile> &files)
@@ -88,44 +120,84 @@ namespace MpqStorm
 		return SFileCloseArchive(hMpq) && bSuccess;
 	}
 
-	HANDLE OpenArchive(const std::string &path)
+	HANDLE OpenArchive(const std::string &path, DWORD dwPriority)
 	{
 		CGuard guard;
 		HANDLE hMpq = NULL;
 		if (!SFileOpenArchive(path.c_str(), 0, MPQ_OPEN_READ_ONLY, &hMpq))
 			return NULL;
 
-		g_archives.insert(hMpq);
+		g_archives.push_back(ArchiveEntry{hMpq, dwPriority});
 		return hMpq;
 	}
 
 	bool CloseArchive(HANDLE hMpq)
 	{
 		CGuard guard;
-		if (!g_archives.erase(hMpq))
+		for (std::vector<ArchiveEntry>::iterator itArchive = g_archives.begin(); itArchive != g_archives.end(); itArchive++)
 		{
-			SetLastError(ERROR_INVALID_HANDLE);
-			return false;
+			if (itArchive->hMpq == hMpq)
+			{
+				g_archives.erase(itArchive);
+				return SFileCloseArchive(hMpq);
+			}
 		}
 
-		return SFileCloseArchive(hMpq);
+		SetLastError(ERROR_INVALID_HANDLE);
+		return false;
 	}
 
 	HANDLE OpenFile(HANDLE hMpq, const std::string &name)
 	{
 		CGuard guard;
-		if (hMpq && !g_archives.count(hMpq))
+		if (hMpq && !IsOpenArchive(hMpq))
 		{
 			SetLastError(ERROR_INVALID_HANDLE);
 			return NULL;
 		}
 
 		HANDLE hFile = NULL;
-		if (!SFileOpenFileEx(hMpq, name.c_str(), hMpq ? SFILE_OPEN_FROM_MPQ : SFILE_OPEN_LOCAL_FILE, &hFile))
+		if (hMpq)
+		{
+			if (!SFileOpenFileEx(hMpq, name.c_str(), SFILE_OPEN_FROM_MPQ, &hFile))
+				return NULL;
+
+			g_files[hFile] = hMpq;
+			return hFile;
+		}
+
+		// Every archive, the highest priority first, and the most recently opened first among equals
+		std::vector<ArchiveEntry> searched(g_archives.rbegin(), g_archives.rend());
+		std::stable_sort(searched.begin(), searched.end(), [](const ArchiveEntry &a, const ArchiveEntry &b)
+			{ return a.dwPriority > b.dwPriority; });
+		for (const ArchiveEntry &archive : searched)
+		{
+			if (SFileOpenFileEx(archive.hMpq, name.c_str(), SFILE_OPEN_FROM_MPQ, &hFile))
+			{
+				g_files[hFile] = archive.hMpq;
+				return hFile;
+			}
+		}
+
+		if (!SFileOpenFileEx(NULL, name.c_str(), SFILE_OPEN_LOCAL_FILE, &hFile))
 			return NULL;
 
-		g_files.insert(hFile);
+		g_files[hFile] = NULL;
 		return hFile;
+	}
+
+	bool GetFileArchive(HANDLE hFile, HANDLE *lphMpq)
+	{
+		CGuard guard;
+		std::map<HANDLE, HANDLE>::iterator itFile = g_files.find(hFile);
+		if (itFile == g_files.end())
+		{
+			SetLastError(ERROR_INVALID_HANDLE);
+			return false;
+		}
+
+		*lphMpq = itFile->second;
+		return true;
 	}
 
 	STORMFILEFUNCTIONS Functions()
@@ -135,6 +207,7 @@ namespace MpqStorm
 		storm.SFileReadFile = MpqReadFile;
 		storm.SFileGetFileSize = MpqGetFileSize;
 		storm.SFileSetFilePointer = MpqSetFilePointer;
+		storm.SFileOpenFileEx = MpqOpenFileEx;
 		return storm;
 	}
 

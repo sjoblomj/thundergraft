@@ -14,7 +14,19 @@ namespace
 
 	std::mutex g_lock;
 	std::map<HANDLE, FakeFile> g_files;
+	std::map<std::string, std::string> g_namedFiles;
+	std::vector<HANDLE> g_openedHandles;
 	UINT_PTR g_nNextHandle = 0x1000;
+
+	// Call with the lock held
+	HANDLE NewHandle(const std::string &contents)
+	{
+		HANDLE hFile = (HANDLE)g_nNextHandle;
+		g_nNextHandle += 4;
+
+		g_files[hFile].contents = contents;
+		return hFile;
+	}
 
 	FakeFile *Find(HANDLE hFile)
 	{
@@ -93,6 +105,21 @@ namespace
 		lpFile->nPosition = (size_t)nNewPosition;
 		return (DWORD)nNewPosition;
 	}
+
+	BOOL WINAPI FakeOpenFileEx(HANDLE, LPCSTR lpszName, DWORD, HANDLE *lphFile)
+	{
+		std::lock_guard<std::mutex> guard(g_lock);
+		std::map<std::string, std::string>::iterator itFile = g_namedFiles.find(lpszName);
+		if (itFile == g_namedFiles.end())
+		{
+			SetLastError(ERROR_FILE_NOT_FOUND);
+			return FALSE;
+		}
+
+		*lphFile = NewHandle(itFile->second);
+		g_openedHandles.push_back(*lphFile);
+		return TRUE;
+	}
 }
 
 namespace FakeStorm
@@ -101,16 +128,26 @@ namespace FakeStorm
 	{
 		std::lock_guard<std::mutex> guard(g_lock);
 		g_files.clear();
+		g_namedFiles.clear();
+		g_openedHandles.clear();
 	}
 
 	HANDLE AddFile(const std::string &contents)
 	{
 		std::lock_guard<std::mutex> guard(g_lock);
-		HANDLE hFile = (HANDLE)g_nNextHandle;
-		g_nNextHandle += 4;
+		return NewHandle(contents);
+	}
 
-		g_files[hFile].contents = contents;
-		return hFile;
+	void AddNamedFile(const std::string &name, const std::string &contents)
+	{
+		std::lock_guard<std::mutex> guard(g_lock);
+		g_namedFiles[name] = contents;
+	}
+
+	std::vector<HANDLE> OpenedHandles()
+	{
+		std::lock_guard<std::mutex> guard(g_lock);
+		return g_openedHandles;
 	}
 
 	bool IsClosed(HANDLE hFile)
@@ -132,6 +169,7 @@ namespace FakeStorm
 		storm.SFileReadFile = FakeReadFile;
 		storm.SFileGetFileSize = FakeGetFileSize;
 		storm.SFileSetFilePointer = FakeSetFilePointer;
+		storm.SFileOpenFileEx = FakeOpenFileEx;
 		return storm;
 	}
 }

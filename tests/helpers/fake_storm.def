@@ -10,11 +10,14 @@ EXPORTS
 	SFileDdaGetVolume@12 @259 NONAME
 	SFileDdaInitialize@4 @260 NONAME
 	SFileDdaSetVolume@12 @261 NONAME
+	SFileGetFileArchive@8 = FakeSFileGetFileArchive@8 @264 NONAME
 	SFileGetFileSize@8 = FakeSFileGetFileSize@8 @265 NONAME
 	SFileOpenArchive@16 = FakeSFileOpenArchive@16 @266 NONAME
+	SFileOpenFile@8 @267 NONAME
 	SFileOpenFileEx@16 = FakeSFileOpenFileEx@16 @268 NONAME
 	SFileReadFile@20 = FakeSFileReadFile@20 @269 NONAME
 	SFileSetFilePointer@16 = FakeSFileSetFilePointer@16 @271 NONAME
 	FakeStormCallCount@4
 	FakeStormCreateArchive@12
+	FakeStormCreateArchiveEx@16
 	FakeStormLastArgs@4

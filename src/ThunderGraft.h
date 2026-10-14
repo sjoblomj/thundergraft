@@ -9,6 +9,8 @@
 /*
 	ThunderGraft replaces the Storm DDA system (see DdaPlayer.h) with its own, which can play compressed formats. It hooks the DDA functions in the game's import table, and in GetProcAddress for games that look them up at runtime, and forwards them to a CDdaPlayer.
 
+	For playlists (see PlaylistPlayer.h), it also hooks SFileOpenFile(Ex), to know which file each handle the DDA functions get is, and SFileOpenArchive and SFileCloseArchive, to lay the playlist files of StarCraft maps over the base playlist file while they are loaded. These hooks only watch: they pass every call on unchanged, so that other plugins hooking the same functions keep working.
+
 	The audio engine is started when the game initializes the DDA system, which it always does before using any other DDA function. Doing it there rather than in InitializePlugin keeps it out of the patcher's context, where waiting for threads might deadlock. If no audio engine can be started, the hooks forward to the original Storm functions instead, so the game behaves exactly as it would without ThunderGraft.
 */
 
@@ -23,7 +25,9 @@
 
 #include "AudioEngine.h"
 #include "DdaPlayer.h"
+#include "PlaylistLog.h"
 #include "Storm.h"
+#include "StormFileNames.h"
 
 // Define the basic MPQDraft plugin constants, then import the plugin template
 // The version comes from the build; see THUNDERGRAFT_VERSION in CMakeLists.txt
@@ -63,6 +67,15 @@ private:
 
 	SFileCloseFilePtr SFileCloseFile;
 
+	SFileOpenFilePtr SFileOpenFile;
+	SFileOpenFileExPtr SFileOpenFileEx;
+	SFileOpenArchivePtr SFileOpenArchive;
+	SFileCloseArchivePtr SFileCloseArchive;
+	// Storm's own SFileOpenFileEx, bypassing every hook, for reading a map's playlist file from the map's archive alone. MPQDraft's hook makes every open search all archives, which would find the mod's playlist file first.
+	SFileOpenFileExPtr SFileOpenFileExUnhooked;
+	// Not hooked; may be NULL
+	SFileGetFileArchivePtr SFileGetFileArchive;
+
 	SFileGetFileSizePtr SFileGetFileSize;
 	SFileReadFilePtr SFileReadFile;
 	SFileSetFilePointerPtr SFileSetFilePointer;
@@ -80,9 +93,17 @@ private:
 	IAudioEngine *volatile m_lpEngine;
 	CDdaPlayer m_player;
 
+	// The names the game opened its files with, and where problems with playlists are written
+	CStormFileNames m_names;
+	CPlaylistLog m_log;
+
 	// Whether starting the audio engine has been attempted, and the lock that makes sure it only happens once
 	BOOL m_bEngineStartAttempted;
 	CRITICAL_SECTION m_csEngineStart;
+
+	// Whether looking for the base playlist file is done: it was found, or it wasn't found the second time either. See LoadBasePlaylist.
+	volatile BOOL m_bBasePlaylistSettled;
+	int m_nBasePlaylistAttempts;
 
 	// Whether we have passed the destructor and hence should not do any unusual actions in the hook functions or other functions that might get called after DLL_PROCESS_DETACH (e.g. TerminatePlugin).
 	volatile BOOL m_bShutDown;
@@ -103,6 +124,11 @@ private:
 	// Starts the audio engine, the player and the update thread, the first time it's called
 	void StartAudioEngine();
 
+	// Reads the base playlist file, from the archives open by now or from the game's directory. Called when the engine starts, and if nothing is found then, once more when the game first plays something: MPQDraft only opens its archives when the game opens its first, which a game might do after initializing DDA.
+	void LoadBasePlaylist();
+	// Reads a map's playlist file from its archive, and lays it over the others
+	void LoadMapPlaylist(IN HANDLE hMpq, IN LPCSTR lpszArchiveName);
+
 	BOOL CreateUpdateThread();
 	static unsigned __stdcall UpdateThread(IN void *lpThis);
 
@@ -114,6 +140,10 @@ private:
 	static FARPROC WINAPI PatchGetProcAddress(OPTIONAL IN HMODULE hModule, IN LPCSTR lpProcName);
 
 	static BOOL WINAPI PatchCloseFile(IN HANDLE hFile);
+	static BOOL WINAPI PatchOpenFile(IN LPCSTR lpszFileName, OUT HANDLE *lphFile);
+	static BOOL WINAPI PatchOpenFileEx(OPTIONAL IN HANDLE hMpq, IN LPCSTR lpszFileName, IN DWORD dwSearchScope, OUT HANDLE *lphFile);
+	static BOOL WINAPI PatchOpenArchive(IN LPCSTR lpszArchiveName, IN DWORD dwPriority, IN DWORD dwFlags, OUT HANDLE *lphMpq);
+	static BOOL WINAPI PatchCloseArchive(IN HANDLE hMpq);
 
 	static BOOL WINAPI PatchDdaInitialize(IN IDirectSound *lpDirectSound);
 	static BOOL WINAPI PatchDdaDestroy();
