@@ -175,6 +175,26 @@ Behaviour changes in the DDA emulation, deliberate:
       gdb. The test runner now has a watchdog that names the hung test case
       after 90 s; if it happens again, start from there.
 
+## Playlists
+
+Implemented as designed in `docs/playlists-design.md` (see its implementation
+notes), with automated tests natively and under Wine. Still to do, all in the
+real games:
+
+- [ ] The manual test matrix below, with playlists: StarCraft's music changing
+      track by track, the title screen looping, Diablo II's area crossfades
+      with a playlist on both sides, a Diablo II dialogue line replaced, with
+      "audio and text".
+- [ ] Compare with SFPls's behaviour on the same `playlist.txt`.
+- [ ] Which StarCraft trigger sounds go through DDA, so they can be cues.
+- [ ] When StarCraft opens and closes map archives (map list, lobby, game,
+      score screen, campaign, Battle.net downloads, replays), and whether it
+      uses `SFileOpenArchive` or `SFileOpenFileAsArchive`, which isn't hooked.
+- [ ] Whether a game initializes DDA before opening its archives (ThunderGraft
+      copes either way, but it decides when a mod's playlist file is found).
+- [ ] Gapless changes and crossfades on a real output device, where the start
+      time of the next track can be off by a mixing period.
+
 ## Release
 
 - [ ] Manual test matrix:
@@ -191,6 +211,7 @@ Behaviour changes in the DDA emulation, deliberate:
     - muting on alt-tab
     - clean exit, with no crash (cf. the 2009.9.22 fix)
     - running alongside other plugins
+    - playlists, and maps with playlist files
 - [x] Docs: `README.md` with build and test instructions; the user readme
       (now `docs/README.md`) updated
       (formats, no `fmodex.dll`, StarEdit removed, credits, licenses); the

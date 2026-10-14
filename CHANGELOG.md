@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Playlists: replace the games' music with playlists of your own, shuffled or in order, without gaps or with crossfades between tracks, in sequences, and with music that changes when the game plays a certain sound and goes back afterwards. StarCraft maps can bring playlists of their own. See `docs/playlists.md`
+- Reads the `playlist.txt` files of ShadowFlare's Playlist Plugin
+- Problems with playlist files are written to `ThunderGraft.log` next to the game
+- `tgplaylist`, a tool that checks, converts and simulates playlist files
 - Replaced FMOD Ex with miniaudio, which is open source and built into the plugin: there is no longer a separate `fmodex.dll` to ship or find
 - Plays music on an output device of its own, at the music's own sampling rate, so the 44 khz workaround is gone
 - Supported formats are now WAV, MP3, Ogg Vorbis and FLAC; WMA, AIFF, MP2, VAG, MIDI and tracker formats are no longer supported

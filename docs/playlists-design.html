@@ -1,5 +1,5 @@
 <h1>Playlists and Audio Triggers: design</h1>
-<p>Status: proposal. Nothing here is implemented yet.</p>
+<p>Status: implemented, but not yet tried in the games. The user guide is <a href="playlists.md"><code>playlists.md</code></a>. Decisions made while implementing it, where this design left room, are in <a href="#implementation-notes">Implementation notes</a>.</p>
 <h2>Goal</h2>
 <p>Let modders replace the games' music with playlists, as ShadowFlare's Playlist Plugin (SFPls) does, but with more control:</p>
 <ul>
@@ -495,6 +495,95 @@ tracks = [
 <li>Map playlists: hook <code>SFileOpenArchive</code> and <code>SFileCloseArchive</code>, layers, and unloading; limits for untrusted files, tested with malformed and oversized files.</li>
 <li>The user readme: playlists, the <code>tgplaylist</code> tool, and that using SFPls is discouraged and running it alongside ThunderGraft is not supported.</li>
 </ol>
+<h2>Implementation notes</h2>
+<p>All nine steps of the <a href="#implementation-order">implementation order</a> are done, except comparing with SFPls in the games, which needs the games.</p>
+<h3>Where it is</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/PlaylistPath.*</code></td>
+<td>Name normalization, pattern matching, specificity, and whether two patterns can match the same file</td>
+</tr>
+<tr>
+<td><code>src/PlaylistFile.*</code></td>
+<td>The model, and the reader on toml++, with the limits for maps</td>
+</tr>
+<tr>
+<td><code>src/SfplsConverter.*</code></td>
+<td>The SFPls converter, both formats</td>
+</tr>
+<tr>
+<td><code>src/PlaylistLoader.*</code></td>
+<td>Finding the base file, in the order of <a href="#reading-the-playlist-file">Reading the playlist file</a></td>
+</tr>
+<tr>
+<td><code>src/PlaylistVisit.*</code></td>
+<td>Passes, shuffling and visits</td>
+</tr>
+<tr>
+<td><code>src/PlaylistLayers.*</code></td>
+<td>The base file and maps' layers, name lookup, which transition applies, and each layer's passes</td>
+</tr>
+<tr>
+<td><code>src/PlaylistPlayer.*</code></td>
+<td>The state machine and what it plays: streams, the current playlist, <code>back</code>, fades, gapless changes, maps</td>
+</tr>
+<tr>
+<td><code>src/PlaylistSimulator.*</code></td>
+<td><code>tgplaylist simulate</code>: the real player with a simulated engine</td>
+</tr>
+<tr>
+<td><code>src/StormFileNames.*</code>, <code>src/PlaylistLog.*</code></td>
+<td>The handle → name map, and <code>ThunderGraft.log</code></td>
+</tr>
+<tr>
+<td><code>src/DdaPlayer.*</code>, <code>src/ThunderGraft.*</code></td>
+<td>The DDA emulation now plays every stream through the player; the new hooks</td>
+</tr>
+<tr>
+<td><code>tools/tgplaylist.cpp</code></td>
+<td>The tool</td>
+</tr>
+</tbody>
+</table>
+<p>Everything but the last three rows is platform-independent and tested natively.</p>
+<h3>Behaviour</h3>
+<ul>
+<li><strong>The current playlist when the game ends the music stream.</strong> <a href="#behaviour">Behaviour</a> says the current playlist stops when the game ends the music stream. Taken literally, that would undo modes such as <code>dark_terran</code> in the <a href="#example">example</a>: StarCraft ends each track's stream before starting the next. So the current playlist is only cleared if the game ends the stream while the playlist's visit is still playing (a victory screen cutting the music off). If the visit had ended, and the game was told so, the game is only moving on, and the playlist stays current for the transitions of the game's next music.</li>
+<li><strong>An interruption of nothing.</strong> A transition on a music stream only replaces the <code>back</code> point if something was playing. If the game's music had ended, the <code>back</code> point stays as it was.</li>
+<li><strong>Going to the current playlist from a new music stream.</strong> If it's still playing, the playing visit moves to the new stream, sounds and all, and the old stream ends as far as the game can tell. That makes Diablo II's area changes seamless when both areas lead to the same playlist.</li>
+<li><strong>Fades on a new music stream.</strong> <code>fade_out</code> and <code>crossfade</code> in a transition on a new music stream fade out the old music stream, which then ends; with <code>fade_out</code>, the new music waits for it. Without fades, the old music stream plays on until the game ends it, as before.</li>
+<li><strong><code>back</code> to the game's own file</strong> is only possible in the stream it came from, as the game's file handle is only safe to read while the game's stream is alive. Interrupting the game's music with a cue keeps that stream alive, so a cue and <code>back</code> work.</li>
+<li><strong><code>stop</code> with <code>fade_out</code></strong> tells the game the stream ended once the fade is over, so that the game doesn't cut the fade short by ending the stream.</li>
+<li><strong>Fades in <code>next</code>.</strong> <code>fade_out</code> fades out the end of the visit's last track; <code>crossfade</code> starts the next playlist's first track that long before the last track ends; <code>fade_in</code> fades it in. What comes after a track is worked out about two and a half seconds before it ends (longer for long crossfades), and the next track is opened then.</li>
+<li><strong>Gapless changes</strong> use miniaudio's start times: <code>IAudioSound::StartAfter</code> schedules a sound to start in engine frames at the moment the other one ends, accurate to a mixing period. <code>IAudioSound::Fade</code> uses miniaudio's fader, which multiplies with the volume and the focus muting. The tests measure both in rendered output.</li>
+<li><strong>An entry with <code>times</code></strong> plays all its times in one visit, also with <code>play = &quot;one&quot;</code>: &quot;play it n times in a row&quot;.</li>
+<li><strong>Stricter than the tables say:</strong> <code>times</code> on a <code>play = &quot;one&quot;</code> playlist is an error, as it would do nothing; <code>crossfade</code> can't be combined with <code>fade_out</code> or <code>fade_in</code> in one target; patterns that are the same once normalized are duplicates; names are case-sensitive, as TOML keys are.</li>
+<li><strong>Maps' passes.</strong> Each map layer has passes of its own, copied from the layer below the first time a playlist plays while the map is loaded, so the base file's playlists continue where they were once the map is unloaded.</li>
+<li><strong>A missing or undecodable track</strong> is warned about once per session. A visit tries each entry at most once before giving up, so a <code>times = &quot;forever&quot;</code> playlist with nothing playable can't spin.</li>
+<li><strong>Equally specific patterns</strong> are found statically by <code>tgplaylist check</code>, but at run time only warned about when they actually tie, as comparing every pair of a map's patterns could be slow.</li>
+</ul>
+<h3>Logging</h3>
+<p>Transitions are logged with <code>THUNDERGRAFT_LOG=transitions</code> in the environment, like <code>THUNDERGRAFT_AUDIO</code>, rather than a key in the playlist file, which a mod could ship with by mistake.</p>
+<h3>Map limits</h3>
+<p>64 KB, 256 playlists, 2048 tracks, 1024 transitions (<code>on</code> entries and <code>next</code>s) and 64 music patterns. Every file's paths are limited to 260 characters, <code>times</code> to a million and durations to an hour.</p>
+<h3>Answers to open questions</h3>
+<ul>
+<li><strong>Does <code>SFileOpenFileEx</code> with an archive handle search only that archive?</strong> Not under MPQDraft: its extended redirection, on by default, hooks <code>SFileOpenFileEx</code> to always search every archive, and its archives have the highest priority, so a mod's <code>music\playlist.toml</code> would be found instead of the map's. ThunderGraft reads maps' files with Storm's own <code>SFileOpenFileEx</code>, found in Storm's export table rather than through <code>GetProcAddress</code> (which MPQDraft hooks too), and checks with <code>SFileGetFileArchive</code> that the file is the map's.</li>
+<li><strong>Are all the archives MPQDraft loads open before the game first calls <code>SFileDdaInitialize</code>?</strong> MPQDraft opens its archives when the game opens its first, through its own pointer to Storm, so ThunderGraft's <code>SFileOpenArchive</code> hook never sees them and can't take them for maps. In case a game initializes DDA before opening any archive, ThunderGraft looks for the base file once more when the game first starts a stream, if it found none before.</li>
+</ul>
+<h3>toml++</h3>
+<p>Two things about toml++ 3.4.0 needed working around, without changing it:</p>
+<ul>
+<li>It asserts some things about its input before checking them properly. In debug builds that aborts on hostile input, such as a map's file containing <code>[[[</code>, and with <code>NDEBUG</code> the assertion becomes a hint to the compiler, which makes it undefined behaviour. <code>PlaylistFile.cpp</code> includes it without <code>NDEBUG</code> and with assertions that do nothing; the checks after them report the errors. The reader's tests include hostile and randomly damaged files, and pass under AddressSanitizer and UndefinedBehaviorSanitizer.</li>
+<li>It parses numbers with string streams on GCC, which bring in locales, whose thread-safe initialization needs functions Windows XP lacks; <code>plugin_dll_check</code> caught that. GCC has been able to parse them with <code>std::from_chars</code> since GCC 11, which <code>TOML_FLOAT_CHARCONV</code> turns on.</li>
+</ul>
 <h2>Open questions</h2>
 <ul>
 <li>Which StarCraft trigger sounds go through DDA? The readme says map trigger sounds do; check which, in the game.</li>
@@ -508,6 +597,7 @@ tracks = [
 <li>campaign missions, maps downloaded from Battle.net into a temporary file, and replays</li>
 </ul>
 </li>
-<li>Does <code>SFileOpenFileEx</code> with an archive handle search only that archive? Reading a map's file depends on it.</li>
-<li>Are all the archives MPQDraft loads open before the game first calls <code>SFileDdaInitialize</code>? If not, a mod's archive would be treated as a map.</li>
+<li><del>Does <code>SFileOpenFileEx</code> with an archive handle search only that archive?</del> See <a href="#answers-to-open-questions">Answers to open questions</a>.</li>
+<li><del>Are all the archives MPQDraft loads open before the game first calls <code>SFileDdaInitialize</code>?</del> See <a href="#answers-to-open-questions">Answers to open questions</a>.</li>
+<li>Does StarCraft open maps with <code>SFileOpenArchive</code>, or with <code>SFileOpenFileAsArchive</code>, which ThunderGraft doesn't hook? Map playlists depend on the former.</li>
 </ul>
