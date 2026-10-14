@@ -473,3 +473,36 @@ DWORD WINAPI PatchImportEntry(
 		lpszFunctionName, nFunctionOrdinal, pfnNewFunction, bRecurse, 
 		lpModuleSet, lpModuleMap);
 }
+
+FARPROC WINAPI GetExportByOrdinal(IN HMODULE hModule, IN DWORD nOrdinal)
+{
+	if (!hModule)
+		return NULL;
+
+	PIMAGE_EXPORT_DIRECTORY pExportDir;
+	DWORD nExportDirSize;
+	if (!FindDataDirectoryEntry(hModule, IMAGE_DIRECTORY_ENTRY_EXPORT, (PVOID *)&pExportDir, &nExportDirSize)
+		|| nExportDirSize < sizeof(IMAGE_EXPORT_DIRECTORY))
+		return NULL;
+
+	// Ordinals count from the export table's base
+	if (nOrdinal < pExportDir->Base || nOrdinal - pExportDir->Base >= pExportDir->NumberOfFunctions)
+		return NULL;
+
+	DWORD iFunction = nOrdinal - pExportDir->Base;
+	// Ordinals are 16 bits, which also keeps the size of the table from overflowing
+	if (pExportDir->NumberOfFunctions > 0x10000
+		|| !IsRangeInImage(hModule, pExportDir->AddressOfFunctions, pExportDir->NumberOfFunctions * sizeof(DWORD)))
+		return NULL;
+
+	DWORD nFunctionRVA = ((LPDWORD)((LPBYTE)hModule + pExportDir->AddressOfFunctions))[iFunction];
+	if (!nFunctionRVA || !IsRangeInImage(hModule, nFunctionRVA, 1))
+		return NULL;
+
+	// An address inside the export directory is the name of the module and function it is forwarded to
+	DWORD nExportDirRVA = (DWORD)((LPBYTE)pExportDir - (LPBYTE)hModule);
+	if (nFunctionRVA >= nExportDirRVA && nFunctionRVA < nExportDirRVA + nExportDirSize)
+		return NULL;
+
+	return (FARPROC)((LPBYTE)hModule + nFunctionRVA);
+}

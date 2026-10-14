@@ -174,4 +174,14 @@ inline DWORD WINAPI GetImportEntryPatches(
 	{ return (DWORD)-1; }
 }
 
+/*
+	* GetExportByOrdinal *
+	Finds a function a module exports, by its ordinal, by reading the module's
+	export table directly. Unlike GetProcAddress, which other modules may have
+	hooked to hand out hooks of their own, this always gives the module's own
+	function. Returns NULL if the module doesn't export the ordinal, if the
+	export is forwarded to another module, or if the export table is damaged.
+*/
+FARPROC WINAPI GetExportByOrdinal(IN HMODULE hModule, IN DWORD nOrdinal);
+
 #endif

@@ -347,3 +347,92 @@ TEST_CASE("Damaged or foreign images are rejected rather than crashing")
 		CHECK(Address(*(FARPROC *)image.At(0x1300)) == Address(ToFarProc(Multiply)));
 	}
 }
+
+TEST_CASE_FIXTURE(RestoreImports, "Exports are found by ordinal in the export table itself")
+{
+	typedef int (WINAPI *TargetFunction)(int a, int b);
+	TargetFunction pfnExport = (TargetFunction)(void (*)(void))GetExportByOrdinal(TargetModule(), 7);
+
+	CHECK(Address(GetExportByOrdinal(TargetModule(), 7)) == Address(OriginalByOrdinal()));
+	REQUIRE(pfnExport);
+	CHECK(pfnExport(6, 7) == 6 - 7);
+	// The linker numbered HookTargetAdd just before it
+	CHECK(Address(GetExportByOrdinal(TargetModule(), 6)) == Address(OriginalAdd()));
+
+	SUBCASE("Even when GetProcAddress would hand out a hook, as MPQDraft's does")
+	{
+		// Patching the imports doesn't change the exports, which is the point
+		PatchImportEntry(GetModuleHandle(NULL), TargetModule(), NULL, 7, ToFarProc(Multiply), NULL, TRUE);
+		CHECK(HookTargetByOrdinal(6, 7) == 42);
+		CHECK(((TargetFunction)(void (*)(void))GetExportByOrdinal(TargetModule(), 7))(6, 7) == -1);
+	}
+
+	SUBCASE("Ordinals the module doesn't export aren't found")
+	{
+		CHECK(Address(GetExportByOrdinal(TargetModule(), 0)) == nullptr);
+		CHECK(Address(GetExportByOrdinal(TargetModule(), 5)) == nullptr);
+		CHECK(Address(GetExportByOrdinal(TargetModule(), 8)) == nullptr);
+		CHECK(Address(GetExportByOrdinal(TargetModule(), 0xFFFF)) == nullptr);
+	}
+
+	SUBCASE("A module without an export table has nothing to find")
+	{
+		CHECK(Address(GetExportByOrdinal(NULL, 7)) == nullptr);
+		CHECK(Address(GetExportByOrdinal(GetModuleHandle(NULL), 100)) == nullptr);
+	}
+}
+
+TEST_CASE("Damaged export tables are rejected rather than crashing")
+{
+	HandMadeImage image;
+	image.WriteHeaders(0, 0);
+
+	const DWORD EXPORT_RVA = 0x1000;
+	PIMAGE_DATA_DIRECTORY lpExportDir = &image.NtHeaders()->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+	lpExportDir->VirtualAddress = EXPORT_RVA;
+	lpExportDir->Size = sizeof(IMAGE_EXPORT_DIRECTORY);
+	PIMAGE_EXPORT_DIRECTORY lpExports = (PIMAGE_EXPORT_DIRECTORY)image.At(EXPORT_RVA);
+	lpExports->Base = 10;
+	lpExports->NumberOfFunctions = 2;
+	lpExports->AddressOfFunctions = 0x1100;
+	((LPDWORD)image.At(0x1100))[0] = 0x1800;
+	((LPDWORD)image.At(0x1100))[1] = 0x1900;
+
+	SUBCASE("A well-formed one works")
+	{
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 10) == image.At(0x1800));
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 11) == image.At(0x1900));
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 12) == nullptr);
+	}
+
+	SUBCASE("Function table running into the end of the image")
+	{
+		lpExports->AddressOfFunctions = HandMadeImage::IMAGE_SIZE - sizeof(DWORD);
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 11) == nullptr);
+	}
+
+	SUBCASE("A count so big the table's size overflows")
+	{
+		lpExports->NumberOfFunctions = 0x40000001;
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 11) == nullptr);
+	}
+
+	SUBCASE("A function outside the image")
+	{
+		((LPDWORD)image.At(0x1100))[1] = HandMadeImage::IMAGE_SIZE + 0x10;
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 11) == nullptr);
+	}
+
+	SUBCASE("A forwarded export, whose address is the name it is forwarded to")
+	{
+		lpExportDir->Size = 0x200;
+		((LPDWORD)image.At(0x1100))[1] = EXPORT_RVA + 0x150;
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 11) == nullptr);
+	}
+
+	SUBCASE("An export directory too small to be one")
+	{
+		lpExportDir->Size = 4;
+		CHECK((const void *)GetExportByOrdinal(image.Module(), 10) == nullptr);
+	}
+}
