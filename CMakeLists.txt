@@ -56,12 +56,19 @@ if(NOT WIN32)
 	target_link_libraries(miniaudio PUBLIC Threads::Threads m ${CMAKE_DL_LIBS})
 endif()
 
-# The platform-independent part of ThunderGraft: the audio engine
+# The platform-independent part of ThunderGraft: the audio engine, and the playlists
 add_library(thundergraft_portable STATIC
 	${TG_SOURCE_DIR}/MiniaudioEngine.cpp
 	${TG_SOURCE_DIR}/OggLength.cpp
+	${TG_SOURCE_DIR}/PlaylistDiagnostics.cpp
+	${TG_SOURCE_DIR}/PlaylistFile.cpp
+	${TG_SOURCE_DIR}/PlaylistLoader.cpp
+	${TG_SOURCE_DIR}/PlaylistPath.cpp
+	${TG_SOURCE_DIR}/SfplsConverter.cpp
 )
 target_include_directories(thundergraft_portable PUBLIC ${TG_SOURCE_DIR})
+# toml++, header-only; only PlaylistFile.cpp includes it
+target_include_directories(thundergraft_portable SYSTEM PRIVATE ${TG_THIRD_PARTY_DIR}/tomlplusplus)
 target_link_libraries(thundergraft_portable PUBLIC miniaudio)
 target_compile_definitions(thundergraft_portable PRIVATE ${TG_PLUGIN_DEFINITIONS})
 target_compile_options(thundergraft_portable PRIVATE -Wall -Wextra)

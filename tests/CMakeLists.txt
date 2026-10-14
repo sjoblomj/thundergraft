@@ -53,10 +53,22 @@ target_link_libraries(portable_tests PRIVATE thundergraft_portable doctest)
 add_dependencies(portable_tests test_fixtures)
 tg_add_test(portable_tests)
 
+# The playlists: file format and SFPls conversion
+add_executable(playlist_tests
+	test_main.cpp
+	playlist_path_test.cpp
+	playlist_file_test.cpp
+	sfpls_converter_test.cpp
+)
+target_link_libraries(playlist_tests PRIVATE thundergraft_portable doctest)
+target_include_directories(playlist_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+tg_add_test(playlist_tests)
+
 if(WIN32)
 	# Test programs run without the MinGW runtime DLLs on the path
 	set(TG_TEST_LINK_OPTIONS -static -static-libgcc -static-libstdc++)
 	target_link_options(portable_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
+	target_link_options(playlist_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 
 	# Builds a helper DLL that exports undecorated stdcall names, as Storm does,
 	# and an import library that lets callers link to them. The import library
