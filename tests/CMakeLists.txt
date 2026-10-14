@@ -48,17 +48,21 @@ add_executable(portable_tests
 	ogg_length_test.cpp
 	engine_test.cpp
 	output_test.cpp
+	playlist_output_test.cpp
 )
 target_link_libraries(portable_tests PRIVATE thundergraft_portable doctest)
 add_dependencies(portable_tests test_fixtures)
 tg_add_test(portable_tests)
 
-# The playlists: file format and SFPls conversion
+# The playlists: file format, SFPls conversion, the order tracks play in, and the player, against a fake engine and with the simulator
 add_executable(playlist_tests
 	test_main.cpp
 	playlist_path_test.cpp
 	playlist_file_test.cpp
 	sfpls_converter_test.cpp
+	playlist_visit_test.cpp
+	playlist_player_test.cpp
+	playlist_simulator_test.cpp
 )
 target_link_libraries(playlist_tests PRIVATE thundergraft_portable doctest)
 target_include_directories(playlist_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

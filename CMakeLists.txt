@@ -62,8 +62,12 @@ add_library(thundergraft_portable STATIC
 	${TG_SOURCE_DIR}/OggLength.cpp
 	${TG_SOURCE_DIR}/PlaylistDiagnostics.cpp
 	${TG_SOURCE_DIR}/PlaylistFile.cpp
+	${TG_SOURCE_DIR}/PlaylistLayers.cpp
 	${TG_SOURCE_DIR}/PlaylistLoader.cpp
 	${TG_SOURCE_DIR}/PlaylistPath.cpp
+	${TG_SOURCE_DIR}/PlaylistPlayer.cpp
+	${TG_SOURCE_DIR}/PlaylistSimulator.cpp
+	${TG_SOURCE_DIR}/PlaylistVisit.cpp
 	${TG_SOURCE_DIR}/SfplsConverter.cpp
 )
 target_include_directories(thundergraft_portable PUBLIC ${TG_SOURCE_DIR})
