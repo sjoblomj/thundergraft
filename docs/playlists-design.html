@@ -1,0 +1,513 @@
+<h1>Playlists and Audio Triggers: design</h1>
+<p>Status: proposal. Nothing here is implemented yet.</p>
+<h2>Goal</h2>
+<p>Let modders replace the games' music with playlists, as ShadowFlare's Playlist Plugin (SFPls) does, but with more control:</p>
+<ul>
+<li>Turn loading of wav files into other formats</li>
+<li>create playlists with shuffled or ordered playback</li>
+<li>control how many times a track or a whole playlist plays</li>
+<li>crossfades between tracks</li>
+<li>sequences: after playlist A has finished, play playlist B</li>
+<li>Audio Triggers: when the game plays a certain sound file, change the music, optionally fading out the previous music, and go back to it afterwards</li>
+<li>replacing other streamed sounds too, such as turning one dialogue line into another</li>
+<li>StarCraft maps should be able to contain playlists of their own, used while the map is loaded</li>
+</ul>
+<p>ThunderGraft's own playlists are written in TOML and is placed in <code>music\playlist.toml</code>. SFPls's playlists, in both its formats, are supported through a converter to that format (see below).</p>
+<h2>How SFPls works</h2>
+<p>SFPls reads <code>music\playlist.txt</code> and has two formats.</p>
+<p>Format 1 is a plain list of files, which replaces all music:</p>
+<pre><code>music\title.wav
+music\terran1.wav
+music\zerg1.wav
+</code></pre>
+<p>&quot;All music&quot; means every file the game opens under its music directory: <code>music\</code> in Diablo, StarCraft and Warcraft II, and <code>data\global\music\</code> in Diablo II. Each is replaced by the next file in the list.</p>
+<p>Format 2 starts with <code>&lt;SFPlaylist1&gt;</code>, maps files the game plays to named playlists, and lists each playlist's files under a <code>&lt;name&gt;</code> header:</p>
+<pre><code>&lt;SFPlaylist1&gt;
+music\terran1.wav = terran
+music\terran2.wav = terran
+
+&lt;terran&gt;
+music\mymusic1.wav
+music\mymusic2.wav
+music\mymusic3.wav
+</code></pre>
+<p>SFPls hooks only <code>SFileOpenFile</code> and <code>SFileOpenFileEx</code>. It swaps the file name when the game opens a file and then gets out of the way. So it picks a track once per open, and the game decides when the next open happens; its readme notes that a game playing a single looping file never moves on to the next entry.</p>
+<p>ThunderGraft works at the other end: it plays every DDA stream itself (<code>src/DdaPlayer.cpp</code>), so it controls when tracks change, fades, gaps and loops. What it lacks is file names; it only sees the handles the game passes to <code>SFileDdaBegin(Ex)</code>.</p>
+<h2>Challenges</h2>
+<h3>Knowing which file is playing</h3>
+<p>ThunderGraft has to hook <code>SFileOpenFile</code> and <code>SFileOpenFileEx</code> as well, and remember which name each handle was opened with, until <code>SFileCloseFile</code>. Names need normalizing before they're compared:</p>
+<ul>
+<li>case-insensitive when reading MPQ archives</li>
+<li><code>/</code> and <code>\</code> treated the same</li>
+<li>We need to support archive paths (<code>MUSIC\X.WAV</code>) as well as paths on the local system (<code>C:\StarCraft\music\x.wav</code>).
+<ul>
+<li>Paths on the local system may only be loaded if the playlist files are loaded from disk rather than the archive (see <a href="#reading-the-playlist-file">Reading the playlist file</a>).</li>
+</ul>
+</li>
+</ul>
+<h3>Events only see streamed sounds</h3>
+<p>Music, Diablo II dialogue and StarCraft map trigger sounds go through DDA, so they can cause transitions. Unit sounds and other effects don't: they're loaded once, cached, and played through the game's own DirectSound buffers. Opening a file isn't playing it, so an event on a file open would fire once, or at the wrong time. Catching effects as they play would mean hooking DirectSound's COM interfaces, which is out of scope here.</p>
+<p>That still leaves a useful idiom: a StarCraft map can &quot;Play WAV&quot; a short silent cue file just to signal ThunderGraft, which gives map makers scripted music changes with no new trigger types.</p>
+<h3>The game still thinks it controls the stream</h3>
+<p>StarCraft waits for a track to end and then picks the next one. Diablo II polls the buffer status and crossfades between areas itself. So with a playlist playing in place of the game's music, ThunderGraft has to decide what the game sees:</p>
+<ul>
+<li>When is the game told the music ended: after each track, or only after the whole playlist?</li>
+<li>When the game starts different music, or stops it (victory screen, leaving a game) while a playlist is playing, which one wins?</li>
+<li>After a cue switches the music, can the previous music continue from where it was interrupted?</li>
+<li>What do <code>SFileDdaGetPos</code> and the game's buffer report while a playlist plays? Position and length must keep making sense to the game, and must not reach the end before the game is meant to see it.</li>
+</ul>
+<p><a href="#behaviour">Behaviour</a> answers these.</p>
+<h3>Which stream is &quot;the music&quot;?</h3>
+<p>Playlists can play in any stream: in place of the game's music, but also in place of a dialogue line. Only the music has state, though: the current playlist and the <code>back</code> point. That state has to outlast individual streams, as StarCraft opens a new stream for every track, and a mode like the dark music in the <a href="#example">example</a> must survive that. So ThunderGraft has to know which streams are music:</p>
+<ul>
+<li>Replacing music changes the current playlist; replacing a dialogue line must not, or every line of dialogue would knock the music out of its mode.</li>
+<li>A cue that changes the music has to find the music among the streams playing, even when that's the game's own, unreplaced track. Diablo II plays dialogue through DDA while music is playing.</li>
+<li><code>back</code> has to know where to return to.</li>
+</ul>
+<p>ThunderGraft can't work this out by itself: to Storm, music and dialogue are both just streamed files, and hints such as the looping flag differ between games. So the music is decided by file name, with the top-level <code>music</code> key. The default, <code>music\*</code> and <code>data\global\music\*</code>, is right for every game, as each only uses its own paths, so most playlist files never set it.</p>
+<h3>Audio engine work</h3>
+<p><code>IAudioEngine</code>/<code>IAudioSound</code> (<code>src/AudioEngine.h</code>) need:</p>
+<ul>
+<li>fades, combined with the game's volume and the focus muting, rather than replacing them</li>
+<li>two sounds of the same stream playing at once, for crossfades (the engine already plays several sounds at once)</li>
+<li>gapless changes between tracks, by opening the next track before the current one ends, or through miniaudio's data source chaining</li>
+</ul>
+<p>Shuffle should work like a shuffled deck: every track plays once before any repeats, and the same track never plays twice in a row across a reshuffle. See <a href="#visits">Visits</a> for when a playlist reshuffles.</p>
+<h3>Other plugins</h3>
+<p>Other MPQDraft plugins may hook the same Storm functions. ThunderGraft patches import entries by ordinal and calls whatever an entry pointed to before it, which may be another plugin's hook (<code>CThunderGraftPlugin::PatchImportEntry</code>), so the hooks chain and every plugin still runs. That is already how its DDA and <code>SFileCloseFile</code> hooks work. The new hooks must:</p>
+<ul>
+<li>pass arguments, return values and <code>GetLastError</code> through unchanged, and never fail a call themselves</li>
+<li>be returned by <code>PatchGetProcAddress</code> too, for games that look Storm functions up at runtime</li>
+<li>lock the handle → name map, as Diablo II opens files from several threads</li>
+<li>be cheap, as the open functions are called for almost every file the game opens</li>
+</ul>
+<p>Two consequences:</p>
+<ul>
+<li>The name ThunderGraft sees can depend on load order: a plugin that rewrites names, and hooked after ThunderGraft, runs first.</li>
+<li>A plugin that bypasses the chain, by patching the game's imports to the real Storm function, leaves ThunderGraft without names. A stream with no known name plays as the game asked, with no transitions: playlists stop working, the music doesn't.</li>
+</ul>
+<p>The hook tests can cover this with a fake second plugin hooking before and after ThunderGraft.</p>
+<h3>SFPls and ThunderGraft together</h3>
+<p>Running SFPls and ThunderGraft together is not supported, and won't be. ThunderGraft reads SFPls's playlists itself, so there's no need for both, and together they would interfere: both hook <code>SFileOpenFile(Ex)</code>, so which name ThunderGraft sees depends on the order the plugins hooked in, and a <code>music\playlist.txt</code> would be applied by both. ThunderGraft doesn't detect SFPls or work around it.</p>
+<p>The user readme should say that using SFPls is discouraged, and that running it alongside ThunderGraft is not supported.</p>
+<h3>Telling users about mistakes</h3>
+<p>Release builds don't write a log today, so without something more, a typo in a playlist would just mean silence or the game's own music, with no hint why. So:</p>
+<ul>
+<li><strong>A file with errors isn't used at all.</strong> ThunderGraft doesn't skip the broken parts and run the rest: a half-working setup is harder to make sense of than one that plainly doesn't work. Without a usable base file, the game behaves as if there were no playlist file, and its own music plays. A map file with errors is rejected the same way, and the base file keeps working underneath. Errors include TOML syntax errors, unknown keys, unknown playlist names (except in a map's file, see <a href="#how-a-maps-file-combines-with-the-base">How a map's file combines with the base</a>), values of the wrong type, paths with control characters, and, for maps, going over the <a href="#maps-are-untrusted">limits</a>. An SFPls file that the converter can't convert cleanly counts as having errors.</li>
+<li><strong>Problems are written to <code>ThunderGraft.log</code>,</strong> next to the game, or in the temporary directory if the game's directory can't be written to. Each entry has the file it's about, a line number where there is one, and the same text that <code>tgplaylist check</code> prints. The log is only written when there's something to say, so there is nothing to switch on: a user whose music doesn't change finds the reason in a file next to the game. It's started afresh each time the game starts.</li>
+<li><strong>Warnings don't reject the file.</strong> Two equally specific patterns, and tracks that turn out to be missing or undecodable when they're played, go in the log, and playback carries on as described in <a href="#behaviour">Behaviour</a>.</li>
+<li><strong>Logging every transition is opt-in.</strong> That's for working out why a setup that loads plays the wrong thing, and would grow without end in a long session.</li>
+<li><strong>No message boxes.</strong> StarCraft and Diablo run fullscreen through DirectDraw, and a message box over them tends to minimise the game or leave it stuck behind the box.</li>
+<li><strong>The <code>tgplaylist</code> tool</strong> (see <a href="#tool">Tool</a>) finds the same errors and warnings before the game is even started, and simulates what plays for a list of events.</li>
+</ul>
+<p>Missing files fall back to the game's own file, never to silence.</p>
+<h2>The model</h2>
+<p>A playlist file describes a small state machine in which <strong>the states are the playlists</strong>. At any moment there is at most one <em>current playlist</em>, which plays in the music stream. Transitions say &quot;on this event, play that playlist&quot;.</p>
+<p>Playlists can also play in place of other streams, such as dialogue lines. Those don't change the current playlist: the state is the music's alone (see <a href="#which-stream-is-the-music">Which stream is &quot;the music&quot;?</a>).</p>
+<p>There are two kinds of event:</p>
+<ul>
+<li><strong>a stream starts</strong>, matched by file name: the game starting music, a dialogue line, or a map's cue sound</li>
+<li><strong>a playlist finishes</strong> (a <a href="#visits">visit</a> ends)</li>
+</ul>
+<p>and two places to write transitions:</p>
+<ul>
+<li><strong>inside a playlist</strong>: they apply only while it's the current playlist</li>
+<li><strong>at the top level</strong>: they apply whatever is current</li>
+</ul>
+<p>A playlist's own transitions beat the top-level ones. (A StarCraft map can bring a playlist file of its own, which adds a level in between; see <a href="#map-playlists">Map playlists</a>.) That is the whole language: no variables, no conditions, no rule order. &quot;Which playlist is current&quot; is the only state, and the only condition. To make something behave differently in some situation, make a playlist for that situation.</p>
+<p>The design deliberately has no variables or scripting. ThunderGraft can only observe streams starting and ending, so a programming language would compute from the same few inputs, at the cost of a runtime, infinite loops inside the game, and errors that only show at runtime. See <a href="#limitations">Limitations</a> for what this gives up.</p>
+<h2>File format</h2>
+<h3>Why TOML</h3>
+<p>The format needs maps (file → playlist), lists of tracks with optional settings, and per-playlist settings. A format of our own would need its own rules for all of this, and its own documentation. TOML and YAML both already have them, and both are familiar from other tools.</p>
+<p>TOML is chosen over YAML because:</p>
+<ul>
+<li>Indentation doesn't matter. In YAML, a misplaced space silently moves a setting into a different section.</li>
+<li>No guessing at types. YAML reads some unquoted words as other types: <code>no</code> as false, <code>1.10</code> as the number 1.1.</li>
+<li>Duplicate keys are an error. That guarantees an event has at most one target in each place transitions are written.</li>
+<li>The parser is small. <a href="https://github.com/marzer/tomlplusplus">toml++</a> is MIT-licensed, header-only C++17, and builds with exceptions disabled. The YAML parsers (yaml-cpp, rapidyaml) are much larger.</li>
+</ul>
+<p>YAML's advantage is that paths can be written unquoted. In TOML they have to be quoted, and the kind of quotes matters; see <a href="#paths">Paths</a>.</p>
+<h3>Example</h3>
+<pre><code class="language-toml">version = 1
+
+# Transitions that apply whatever is playing
+[on]
+'music\title.wav'    = &quot;titlelist&quot;
+'music\terran?.wav'  = &quot;terranlist&quot;
+# A cue: boss.wav itself still plays, as the map intended. The music fades out
+# over 3 seconds, then &quot;boss&quot; plays in the music stream. This interrupts the
+# music, so &quot;back&quot; can return to it later.
+'staredit\wav\boss.wav' = { music = &quot;boss&quot;, fade_out = 3 }
+
+[playlist.titlelist]
+tracks = ['music\title.ogg']  # Swap the games wav file for our own ogg file
+
+[playlist.terranlist]
+order = &quot;shuffle&quot;
+crossfade = 1.5
+tracks = [
+    'music\t1.ogg',
+    { file = 'music\t2.ogg', times = 2 },
+    'music\t3.ogg',
+]
+# Only while terranlist is the current playlist: darkness.wav plays as normal,
+# and the music crossfades into &quot;dark_terran&quot; over 3 seconds. dark_terran
+# becomes the current playlist, so from now on its transitions apply, not
+# terranlist's.
+on.'staredit\wav\darkness.wav' = { music = &quot;dark_terran&quot;, crossfade = 3 }
+
+[playlist.dark_terran]
+tracks = ['music\dark_t1.ogg', 'music\dark_t2.ogg']
+on.'music\terran?.wav' = &quot;dark_terran&quot;    # stay dark when the game changes track
+on.'staredit\wav\report.wav' = &quot;report_dark&quot;    # and swap a transmission for a darker one
+
+[playlist.report_dark]
+tracks = ['staredit\wav\report_dark.ogg']
+
+[playlist.boss]
+play = &quot;all&quot;
+tracks = ['music\boss_intro.ogg', 'music\boss.ogg']
+next = &quot;boss_end&quot;
+
+[playlist.boss_end]
+tracks = ['music\boss_end.ogg']
+next = { play = &quot;back&quot;, fade_in = 2 }
+</code></pre>
+<p>What this does, in StarCraft:</p>
+<ul>
+<li>The title screen plays <code>titlelist</code>. Terran missions play <code>terranlist</code> one track at a time, as SFPls would, but shuffled and with crossfades.</li>
+<li>When a Terran mission plays the cue <code>darkness.wav</code> (a map's trigger sound), the music crossfades to <code>dark_terran</code> and stays dark for the rest of the mission, because <code>dark_terran</code> sends the game's Terran tracks back to itself. While it's dark, the map's <code>report.wav</code> transmission plays as <code>report_dark.ogg</code> instead; the music isn't affected. Returning to the title screen goes to <code>titlelist</code>, which ends the dark mode with no reset needed.</li>
+<li>Whenever a map plays <code>boss.wav</code>, the current music fades out and <code>boss</code> plays its intro and main track, then <code>boss_end</code>, and then the music that was interrupted continues from where it was interrupted, fading in.</li>
+</ul>
+<h3>Top level</h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td><code>1</code></td>
+<td>Required. Lets later versions change the format.</td>
+</tr>
+<tr>
+<td><code>music</code></td>
+<td>list of file patterns</td>
+<td>Which streams are music, and so carry the current playlist. Default <code>['music\*', 'data\global\music\*']</code>. See <a href="#which-stream-is-the-music">Which stream is &quot;the music&quot;?</a>.</td>
+</tr>
+<tr>
+<td><code>[on]</code></td>
+<td>file pattern = target</td>
+<td>Transitions that apply whatever is current.</td>
+</tr>
+<tr>
+<td><code>[playlist.&lt;name&gt;]</code></td>
+<td>see <a href="#playlists">Playlists</a></td>
+<td>One table per playlist.</td>
+</tr>
+<tr>
+<td><code>map_playlists</code></td>
+<td><code>true</code>, <code>false</code></td>
+<td>Base file only; default <code>true</code>. Whether maps' playlist files are used.</td>
+</tr>
+<tr>
+<td><code>inherit</code></td>
+<td><code>true</code>, <code>false</code></td>
+<td>Map files only; default <code>true</code>. With <code>false</code>, the base file is ignored while the map is loaded.</td>
+</tr>
+</tbody>
+</table>
+<p>Unknown keys, unknown playlist names and values of the wrong type are errors, not ignored (a map's file may name playlists the base provides; see <a href="#how-a-maps-file-combines-with-the-base">Map playlists</a>): a file with errors isn't used, and the errors are written to the log (see <a href="#telling-users-about-mistakes">Telling users about mistakes</a>). <code>back</code> and <code>stop</code> can't be used as playlist names.</p>
+<h3>Playlists</h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Values</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tracks</code></td>
+<td>list</td>
+<td>required</td>
+<td>Each entry is a path, or <code>{ file = &lt;path&gt;, times = &lt;n&gt; }</code> to play it <code>n</code> times in a row.</td>
+</tr>
+<tr>
+<td><code>order</code></td>
+<td><code>&quot;in order&quot;</code>, <code>&quot;shuffle&quot;</code></td>
+<td><code>&quot;in order&quot;</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>play</code></td>
+<td><code>&quot;one&quot;</code>, <code>&quot;all&quot;</code></td>
+<td><code>&quot;one&quot;</code></td>
+<td>How much one visit plays; see below.</td>
+</tr>
+<tr>
+<td><code>times</code></td>
+<td>number, <code>&quot;forever&quot;</code></td>
+<td><code>1</code></td>
+<td>With <code>play = &quot;all&quot;</code>: total plays of the whole list per visit.</td>
+</tr>
+<tr>
+<td><code>crossfade</code></td>
+<td>seconds</td>
+<td><code>0</code></td>
+<td>Between tracks of this playlist.</td>
+</tr>
+<tr>
+<td><code>next</code></td>
+<td>target</td>
+<td>none</td>
+<td>What to play when a visit ends, in the same stream.</td>
+</tr>
+<tr>
+<td><code>on</code></td>
+<td>file pattern = target</td>
+<td>none</td>
+<td>Transitions that apply while this is the current playlist.</td>
+</tr>
+</tbody>
+</table>
+<p><code>times</code> is always the total number of plays, never extra repeats, as &quot;loop 2&quot; is ambiguous. Durations are numbers of seconds, e.g. <code>1.5</code>.</p>
+<p><code>on</code> entries are written as TOML dotted keys, one per line (<code>on.'music\terran?.wav' = &quot;dark_terran&quot;</code>), or as a <code>[playlist.&lt;name&gt;.on]</code> table.</p>
+<h3>Visits</h3>
+<p>Playing a playlist in a stream starts a <em>visit</em>. A visit plays:</p>
+<ul>
+<li>with <code>play = &quot;one&quot;</code>: the playlist's next track</li>
+<li>with <code>play = &quot;all&quot;</code>: the whole list, <code>times</code> times</li>
+</ul>
+<p>When a visit ends, the stream goes on to <code>next</code> if the playlist has one. Otherwise the stream ends, the game is told it ended, and for music the game picks its next file as it would without ThunderGraft; that file may cause a transition in turn. So <code>next</code> decides who chooses what comes after: ThunderGraft, or the game. The same holds for other streams: a dialogue line replaced by a chain of playlists only ends, for the game, when the chain does, which matters for Diablo II's &quot;audio and text&quot; setting.</p>
+<p>Each visit starts a <em>pass</em> through the list, or continues one:</p>
+<ul>
+<li><strong><code>play = &quot;one&quot;</code>:</strong> a visit continues the current pass, with the track after the one the previous visit played, and a new pass starts when the list runs out. The playlist remembers how far it got for the rest of the session, as SFPls's do. StarCraft asks for new music after every track, so this is what makes every track play before any of them repeats.</li>
+<li><strong><code>play = &quot;all&quot;</code>:</strong> every visit starts a new pass, from the start of the list, and each of its <code>times</code> repetitions is a new pass too. A visit cut short by a transition doesn't carry over to the next visit. (<code>back</code> is different: it continues from where the music was interrupted; see <a href="#back">Back</a>.)</li>
+</ul>
+<p>With <code>order = &quot;shuffle&quot;</code>, every pass is shuffled anew, like a reshuffled deck: within a pass every track plays once, and the last track of one pass is never the first of the next. So a shuffled <code>play = &quot;all&quot;</code> playlist plays in a new order on every visit, and a shuffled <code>play = &quot;one&quot;</code> playlist reshuffles each time all its tracks have played.</p>
+<p>If the game asked for a stream to loop (title screen music, for example), a visit never ends: a <code>play = &quot;one&quot;</code> playlist loops its track, and a <code>play = &quot;all&quot;</code> playlist repeats its list, with each repetition a new pass.</p>
+<h3>Targets</h3>
+<p>A target is what a transition plays. It acts on the stream the event is about: the stream that just started, or, for <code>next</code>, the stream the visit was playing in.</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&quot;&lt;playlist&gt;&quot;</code></td>
+<td>Play that playlist in the stream, in place of the game's file. Going to the current playlist doesn't restart it: if it's still playing, it continues; otherwise a new visit starts.</td>
+</tr>
+<tr>
+<td><code>&quot;back&quot;</code></td>
+<td>Music only: go back to what was interrupted, from the position where it was interrupted. This may be the game's own music. See <a href="#back">Back</a>.</td>
+</tr>
+<tr>
+<td><code>&quot;stop&quot;</code></td>
+<td>Silence the stream; the game is told it ended. For music, until the game next starts music.</td>
+</tr>
+<tr>
+<td><code>{ play = &lt;target&gt;, ... }</code></td>
+<td>The same, with fades: <code>fade_out</code> (what played before), <code>fade_in</code> (the new playlist) or <code>crossfade</code> (both at once), in seconds.</td>
+</tr>
+<tr>
+<td><code>{ music = &lt;target&gt;, ... }</code></td>
+<td>Leave the stream alone, and play the target in the music stream instead, with the same optional fades. This is how a cue changes the music. In a music stream it's the same as <code>play</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Without fades, the change is immediate. <code>{ music = ... }</code> also works in <code>next</code>: a dialogue playlist can change the music when it has finished.</p>
+<h3>Back</h3>
+<p>A transition that changes the music because a stream started (a music stream, or a <code>{ music = ... }</code> cue) <em>interrupts</em> what was playing, and that is what <code>back</code> returns to. Replacing another stream, such as a dialogue line, doesn't interrupt anything. A <code>next</code> doesn't interrupt anything: it continues the interruption. So a cue can start a chain of playlists, linked by <code>next</code>, and the end of the chain can go <code>back</code> to the music from before the cue, as <code>boss_end</code> does in the <a href="#example">example</a>.</p>
+<p>Only one interruption is remembered. If a second cue interrupts the boss music in the example, <code>back</code> returns to the boss music, and the music from before the first cue is lost.</p>
+<p>Nothing is paused while the interruption plays. ThunderGraft remembers what was playing (a playlist's track, or the game's own file) and the position it had reached, and lets the sound be stopped as any other. <code>back</code> opens that track again, seeks to the remembered position, and fades in if asked to. The engine can already seek, so this needs no engine work. The game's own music is read through the game's own file handle. After a cue, the game still has that file open, since as far as it knows its music never stopped. If the game closes the file before the <code>back</code>, for example by starting other music, there is nothing left to go back to.</p>
+<p>After a <code>back</code>, there is nothing left to go back to until the next interruption. A <code>back</code> with nothing to go back to, or outside the music, acts as if there were no target: as <code>next</code>, the visit ends and the game is told the stream ended; in an <code>on</code> transition, nothing happens.</p>
+<h3>Which transition applies</h3>
+<p>When a stream starts:</p>
+<ol>
+<li>If the current playlist's <code>on</code> has a matching pattern, that transition applies.</li>
+<li>Otherwise, if a <a href="#map-playlists">map</a> is loaded and its top-level <code>[on]</code> has one, that applies.</li>
+<li>Otherwise, if the base file's top-level <code>[on]</code> has one, that applies.</li>
+<li>Otherwise there is no transition.</li>
+</ol>
+<p>If several patterns in one table match the file, the one with the most characters other than <code>*</code> and <code>?</code> wins; a pattern without wildcards always wins over one with them. Two equally specific matches are a warning (from the tool, and in the log), and the alphabetically first wins.</p>
+<p>What happens then:</p>
+<ul>
+<li><strong>A plain target (or <code>play</code>):</strong> it plays in the stream that started, in place of the game's file. If the stream is music, it becomes the music stream, and the target the current playlist. Otherwise the music isn't affected.</li>
+<li><strong>A <code>music</code> target:</strong> the stream that started plays as normal, and the target replaces whatever plays in the music stream. If no music is playing, the transition is ignored.</li>
+<li><strong>No transition:</strong> the game's file plays. If the stream is music, it becomes the music stream, with no current playlist until the next transition. Otherwise nothing changes.</li>
+</ul>
+<p>The music stream is always the most recently started music stream. Diablo II crossfades between areas by starting the new area's music while the old one fades out; the old stream keeps playing whatever it was playing until the game ends it, while the state moves on to the new one.</p>
+<p>Transitions only happen on these events, never as a side effect of another transition, so they can't loop.</p>
+<h3>Paths</h3>
+<p>TOML treats <code>\</code> in double-quoted strings as the start of an escape. <code>&quot;music\zerg1.wav&quot;</code> is an error, but <code>&quot;music\terran1.wav&quot;</code> silently becomes <code>music</code>, a tab, and <code>erran1.wav</code>. So:</p>
+<ul>
+<li>paths are written in single quotes, which TOML takes literally: <code>'music\terran1.wav'</code></li>
+<li><code>/</code> is accepted in place of <code>\</code> everywhere: <code>&quot;music/terran1.wav&quot;</code> works in either kind of quotes</li>
+<li>a path containing a tab, newline or other control character is reported as an error, suggesting single quotes</li>
+</ul>
+<p>The documentation and the converter's output always use single quotes. File patterns may use <code>*</code> and <code>?</code>.</p>
+<h2>Behaviour</h2>
+<p>Answers to <a href="#the-game-still-thinks-it-controls-the-stream">The game still thinks it controls the stream</a>:</p>
+<ul>
+<li><strong>Game-visible end:</strong> when a visit ends with no <code>next</code> (see <a href="#visits">Visits</a>), in any stream.</li>
+<li><strong>Position and length:</strong> the current track's.</li>
+<li><strong>The game wins:</strong> when the game starts new music, the transitions for that file decide what plays, as for any event. When it ends the music stream, the current playlist stops; there is no current playlist until the next transition, but every playlist keeps its position.</li>
+<li><strong>Several music streams:</strong> the most recently started one is the music; older ones play out until the game ends them (see <a href="#which-transition-applies">Which transition applies</a>).</li>
+<li><strong>Back:</strong> reopens what the last interruption replaced and seeks to where it was; see <a href="#back">Back</a>.</li>
+<li><strong>Volume:</strong> fades multiply with the game's volume and with focus muting; the game's volume changes keep applying to playlists.</li>
+<li><strong>Missing or undecodable tracks:</strong> skipped; if a whole playlist is unplayable, the game's own file plays.</li>
+</ul>
+<h2>Limitations</h2>
+<p>Without variables, two things take more writing:</p>
+<ul>
+<li><strong>Counting</strong>, e.g. &quot;only the first three times the cue plays&quot;: a chain of playlists, <code>C1</code> → <code>C2</code> → <code>C3</code>.</li>
+<li><strong>Independent modes</strong>, e.g. dark/light music for each of three races: one playlist per combination, six instead of three, each with its own transitions.</li>
+</ul>
+<p>Anything with a fixed number of situations can still be expressed, so nothing becomes impossible. If the duplicated transitions turn out to be a real problem, the thing to add is named sets of transitions that several playlists share, not variables.</p>
+<p>Only the music has state. A replaced dialogue line can depend on the music's state (through the current playlist's <code>on</code>), but there is no state of its own, such as &quot;the second time this line plays&quot;.</p>
+<p><code>back</code> remembers one interruption, not a stack of them. A stack can be added if interruptions of interruptions turn out to matter.</p>
+<p>Events are only stream starts and visit ends. Stream ends and timers (&quot;after five minutes of the same music&quot;) could be added as further kinds of key later, without changing the model.</p>
+<h2>SFPls playlists</h2>
+<h3>Converting format 2</h3>
+<p>The converter turns an SFPls format 2 playlist into the TOML format:</p>
+<table>
+<thead>
+<tr>
+<th>SFPls</th>
+<th>TOML</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>music\terran1.wav = terran</code></td>
+<td><code>'music\terran1.wav' = &quot;terran&quot;</code> under <code>[on]</code></td>
+</tr>
+<tr>
+<td><code>&lt;terran&gt;</code> and the files after it</td>
+<td><code>[playlist.terran]</code> with those files as <code>tracks</code>, in the same order</td>
+</tr>
+</tbody>
+</table>
+<p>SFPls can replace sounds as well as music. Those mappings convert the same way: a plain target replaces the stream it's about, whether it's music or not, so they behave as in SFPls.</p>
+<p>Every converted playlist gets the defaults, <code>order = &quot;in order&quot;</code> and <code>play = &quot;one&quot;</code>, with no <code>next</code>, which is how SFPls behaves. The converter writes them out explicitly, so a modder editing the result sees what there is to change.</p>
+<p>A mapping to a playlist that doesn't exist, a playlist with no files, and lines that are neither mappings nor files are reported with their line numbers. SFPls section names may contain characters TOML doesn't allow in bare keys; those are quoted (<code>[playlist.&quot;my list&quot;]</code>). A section named <code>back</code> or <code>stop</code> is renamed, and the converter says so.</p>
+<h3>Converting format 1</h3>
+<p>Format 1 (a plain list) converts to a single playlist that every file in the game's music directory goes to (see <a href="#how-sfpls-works">How SFPls works</a>):</p>
+<pre><code class="language-toml">version = 1
+
+[on]
+'music\*'             = &quot;music&quot;    # Diablo, StarCraft, Warcraft II
+'data\global\music\*' = &quot;music&quot;    # Diablo II
+
+[playlist.music]
+order = &quot;in order&quot;
+play = &quot;one&quot;
+tracks = [
+    'music\title.wav',
+    'music\terran1.wav',
+    'music\zerg1.wav',
+]
+</code></pre>
+<p>The converter doesn't know which game the playlist is for, so it writes both patterns. That's harmless: each game only uses its own paths. The tracks themselves may be under the music directory too, but they never match: ThunderGraft opens a playlist's tracks itself, and only files the game opens cause events.</p>
+<h3>Where the converter runs</h3>
+<p>The conversion is one piece of platform-independent code, used in two places:</p>
+<ul>
+<li><strong>In the plugin</strong>, so existing SFPls mods work with ThunderGraft unchanged: when there's no ThunderGraft playlist, <code>music\playlist.txt</code> is converted in memory and used as if it were one.</li>
+<li><strong>In the playlist tool</strong>, so modders can convert once and then extend the result.</li>
+</ul>
+<h3>Tool</h3>
+<p>A small command-line program, built for Windows and natively:</p>
+<ul>
+<li><code>tgplaylist convert playlist.txt playlist.toml</code>: converts an SFPls playlist.</li>
+<li><code>tgplaylist check playlist.toml</code>: reports every problem in a playlist, with line numbers. It can also check that the files the playlist names exist, given a directory or the MPQs to look in. <code>tgplaylist check --map map.toml</code> checks a map's file and lists the playlist names it expects the base to provide; with <code>--base playlist.toml</code>, it checks the two together, as ThunderGraft will combine them.</li>
+<li><code>tgplaylist simulate playlist.toml events.txt</code>: reads a list of events, such as &quot;start <code>music\terran1.wav</code>&quot; or &quot;end of visit&quot;, and prints the current playlist, the track and the transition taken after each. This is also how the state machine is tested natively.</li>
+</ul>
+<h2>Reading the playlist file</h2>
+<ol>
+<li>If there is a <code>music\playlist.toml</code> present in an archive, use that.</li>
+<li>If not, check for <code>music\playlist.txt</code> in an archive and convert it to TOML.</li>
+<li>If neither is present, check if there is a <code>music\playlist.toml</code> present on disk, in the game directory, and use that.</li>
+<li>If not, check if there is a <code>music\playlist.txt</code> present on disk, in the game directory, and convert it.</li>
+</ol>
+<p>A <code>music\playlist.txt</code> whose first line (ignoring blank lines) is <code>&lt;SFPlaylist1&gt;</code> is format 2; any other is format 1.</p>
+<p>This is the <em>base file</em>. It's read once, the first time ThunderGraft starts its audio engine. Archives open by then, including the ones MPQDraft loads, are part of the base; any archive opened later is treated as a map (see <a href="#map-playlists">Map playlists</a>).</p>
+<h2>Map playlists</h2>
+<p>A StarCraft map is an MPQ, so it can contain a <code>music\playlist.toml</code> of its own, for music while that map is loaded. When the map is done, the base file applies again, as if the map's file had never been there.</p>
+<h3>Layers</h3>
+<p>Playlist files are layers. The base file is the bottom layer. A map's file is laid over it while the map's archive is open, and removed when the archive closes.</p>
+<p>ThunderGraft hooks <code>SFileOpenArchive</code> and <code>SFileCloseArchive</code> as well, with the same chaining as its other hooks:</p>
+<ul>
+<li><strong>On open:</strong> look for <code>music\playlist.toml</code> in that archive only. If it's there, push it as a layer, tied to that archive handle.</li>
+<li><strong>On close:</strong> remove that archive's layer, then let Storm close the archive.</li>
+</ul>
+<p>Layers are kept as a stack, and the most recently opened map is the one in use. That copes with several archives being open at once, and closing removes the right layer wherever it is in the stack.</p>
+<p>Maps only use <code>music\playlist.toml</code>; SFPls never read playlists from maps, so there are none to convert.</p>
+<h3>How a map's file combines with the base</h3>
+<p>A map maker can't know which mod the player is running, so by default a map adds to the base file rather than replacing it:</p>
+<ul>
+<li><strong>Transitions:</strong> the map's top-level <code>[on]</code> is its own level in <a href="#which-transition-applies">Which transition applies</a>, between the current playlist's <code>on</code> and the base file's <code>[on]</code>. It isn't merged into the base's <code>[on]</code>, as a base pattern without wildcards would then beat a map's wildcard pattern by specificity, which would surprise the map maker.</li>
+<li><strong>Playlists:</strong> a playlist's name is the part after <code>playlist.</code> in its table header, and targets (in <code>on</code>, <code>[on]</code>, <code>next</code>, <code>play</code> and <code>music</code>) refer to playlists by name. While a map is loaded, every name is looked up in the map first, then in the base, whichever file the reference is in:
+<ul>
+<li>A map can use the base's playlists without copying them: a map cue <code>{ music = &quot;boss&quot; }</code> plays the base's <code>boss</code> if the map doesn't define one.</li>
+<li>A map playlist with the same name as a base playlist hides the base one, for the base's references too. So a map can define its own <code>terranlist</code>, and the base's <code>[on]</code> sends the game's Terran tracks to the map's music. When the map is unloaded, the base's playlist is back.</li>
+<li>A map maker can't know which mod the player runs, so a map that names a playlist neither file defines isn't rejected for it, as that's a problem with the combination, not necessarily with the map's file. It's a warning in the log, the transitions that use the name are ignored (a <code>next</code> to it acts as if there were no <code>next</code>), and the rest of the map's file works. Inside the base file, an unknown name is still an error.</li>
+</ul>
+</li>
+<li><strong><code>music</code>:</strong> the map's, if it has one, otherwise the base's.</li>
+<li><strong><code>inherit = false</code></strong> in the map's file ignores the base file completely while the map is loaded, for maps that want full control.</li>
+</ul>
+<h3>When a map is unloaded</h3>
+<ol>
+<li><strong>Stop every track ThunderGraft opened while the map was loaded</strong>, before Storm closes the archive. That includes the map's own playlists, but also base playlists' tracks: while the map is loaded, Storm may have found a file of the same name in the map (see below). Storm handles into a closed archive can't be trusted. There's no time for a fade, as the game is waiting for the close to return. The game's own streams are the game's business, as without ThunderGraft.</li>
+<li><strong>Work out again what should play.</strong> A map playlist that's current goes away, and so does a <code>back</code> point that refers to the map. ThunderGraft knows which file the game's music stream is playing, so it handles it as if that stream had just started under the remaining layers: a base playlist, or the game's own file if no transition matches.</li>
+<li><strong>The base file's state is untouched.</strong> Its playlists' passes were frozen while the map was loaded, so the mod's music continues where it left off.</li>
+</ol>
+<p>In practice the game usually starts new music at that moment anyway (the score screen, the menus), and step 2 rarely matters.</p>
+<h3>Maps are untrusted</h3>
+<p>Maps are downloaded from strangers, so a map's file is hostile input:</p>
+<ul>
+<li>The reader must cope with anything, with limits on file size and on the number of playlists, tracks and transitions.</li>
+<li>A playlist in an archive may only refer to files in archives: no absolute paths and no <code>..</code>, as Storm falls back to opening files on disk.</li>
+<li>The base file can turn map playlists off with <code>map_playlists = false</code>, for players and mods that don't want maps changing their music.</li>
+</ul>
+<p>While a map is loaded, Storm's search may find a file in the map with the same name as a base track before the base one. That's how Storm works for every file, and ThunderGraft doesn't change it, but modders should know.</p>
+<h3>Alternative not taken</h3>
+<p>Without the archive hooks, ThunderGraft could read <code>music\playlist.toml</code> through Storm's normal search every time music starts: Storm prefers the map's archive while it's open, so that finds the map's file, and the base file afterwards. That's less code, but it can't layer (Storm returns one file or the other), only notices an unloaded map at the next music start, and can't stop a map's tracks before their archive closes.</p>
+<h2>Implementation order</h2>
+<ol>
+<li>Hook <code>SFileOpenFile(Ex)</code> and map handles to names, with tests on the fake <code>Storm.dll</code>.</li>
+<li>A platform-independent playlist reader on toml++, and the SFPls converter for both formats, with native tests and line-numbered errors.</li>
+<li>The state machine, platform-independent, and the <code>tgplaylist</code> tool with <code>convert</code>, <code>check</code> and <code>simulate</code>.</li>
+<li>Music transitions with <code>play = &quot;one&quot;</code> and <code>order = &quot;in order&quot;</code>, matching SFPls; compare against SFPls in the games.</li>
+<li>Engine support for fades and gapless changes.</li>
+<li><code>play = &quot;all&quot;</code>, shuffle, <code>times</code>, crossfades and <code>next</code>.</li>
+<li>Transitions on other streams: replacing them, cues (<code>music</code> targets), and <code>back</code>.</li>
+<li>Map playlists: hook <code>SFileOpenArchive</code> and <code>SFileCloseArchive</code>, layers, and unloading; limits for untrusted files, tested with malformed and oversized files.</li>
+<li>The user readme: playlists, the <code>tgplaylist</code> tool, and that using SFPls is discouraged and running it alongside ThunderGraft is not supported.</li>
+</ol>
+<h2>Open questions</h2>
+<ul>
+<li>Which StarCraft trigger sounds go through DDA? The readme says map trigger sounds do; check which, in the game.</li>
+<li>A cue while no music plays is ignored. Should it instead start the target, even though the player may have turned the music off?</li>
+<li>Should events ever be allowed on files that are opened but not streamed, documented as unreliable?</li>
+<li>When does StarCraft open and close map archives? To check in the game before building map playlists on it:
+<ul>
+<li>the map list, which probably opens every map briefly for its description and preview (harmless if the layer comes and goes before any music starts)</li>
+<li>the lobby, which probably keeps the selected map open; that would let a map set the ready-room music</li>
+<li>the game itself, and the score screen afterwards: is the archive closed before or after the score screen's music starts?</li>
+<li>campaign missions, maps downloaded from Battle.net into a temporary file, and replays</li>
+</ul>
+</li>
+<li>Does <code>SFileOpenFileEx</code> with an archive handle search only that archive? Reading a map's file depends on it.</li>
+<li>Are all the archives MPQDraft loads open before the game first calls <code>SFileDdaInitialize</code>? If not, a mod's archive would be treated as a map.</li>
+</ul>
