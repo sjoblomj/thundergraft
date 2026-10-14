@@ -97,15 +97,6 @@ if(WIN32)
 		add_dependencies(${name}_import ${name}_import_library ${name})
 	endfunction()
 
-	# StormLib, for Storm file functions that read real MPQs, with its own copies of zlib and bzip2
-	set(STORM_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-	set(STORM_USE_BUNDLED_LIBRARIES ON CACHE BOOL "" FORCE)
-	set(CMAKE_DISABLE_FIND_PACKAGE_ZLIB ON)
-	set(CMAKE_DISABLE_FIND_PACKAGE_BZip2 ON)
-	add_subdirectory(${TG_THIRD_PARTY_DIR}/StormLib ${CMAKE_BINARY_DIR}/third_party/StormLib EXCLUDE_FROM_ALL)
-	# Third-party code; its warnings aren't ours
-	target_compile_options(storm PRIVATE -w)
-
 	add_library(mpq_storm STATIC fakes/MpqStorm.cpp)
 	target_include_directories(mpq_storm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${TG_SOURCE_DIR})
 	target_link_libraries(mpq_storm PUBLIC storm)
@@ -168,4 +159,81 @@ if(WIN32)
 			COMMAND ${CMAKE_COMMAND} -DOBJDUMP=${TG_OBJDUMP} -DPLUGIN=$<TARGET_FILE:ThunderGraft> -P ${CMAKE_CURRENT_SOURCE_DIR}/check_plugin_dll.cmake
 		)
 	endif()
+endif()
+
+# The tgplaylist tool, run on the files in playlists/
+if(THUNDERGRAFT_BUILD_TOOLS)
+	function(tg_add_tool_test name)
+		cmake_parse_arguments(PARSE_ARGV 1 TOOL_TEST "" "EXIT;OUTPUT_FILE;EXPECT_FILE" "ARGS;EXPECT;REJECT")
+		string(REPLACE ";" "|" args "${TOOL_TEST_ARGS}")
+		string(REPLACE ";" "|" expect "${TOOL_TEST_EXPECT}")
+		string(REPLACE ";" "|" reject "${TOOL_TEST_REJECT}")
+		add_test(NAME ${name}
+			COMMAND ${CMAKE_COMMAND}
+				"-DTOOL=$<TARGET_FILE:tgplaylist>"
+				"-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}"
+				"-DARGS=${args}"
+				"-DEXIT=${TOOL_TEST_EXIT}"
+				"-DEXPECT=${expect}"
+				"-DREJECT=${reject}"
+				"-DOUTPUT_FILE=${TOOL_TEST_OUTPUT_FILE}"
+				"-DEXPECT_FILE=${TOOL_TEST_EXPECT_FILE}"
+				-P ${CMAKE_CURRENT_SOURCE_DIR}/check_tool.cmake
+			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/playlists
+		)
+		set_tests_properties(${name} PROPERTIES TIMEOUT 60)
+		if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+			set_tests_properties(${name} PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
+		endif()
+	endfunction()
+
+	tg_add_tool_test(tgplaylist_check EXIT 0 ARGS check example.toml EXPECT "No problems found")
+	tg_add_tool_test(tgplaylist_check_errors EXIT 1 ARGS check broken.toml
+		EXPECT
+			"broken.toml:4: error: playlist \"terran\" has an unknown key \"tracsk\""
+			"broken.toml:3: error: playlist \"terran\" has no tracks"
+			"broken.toml:5: error: there is no playlist named \"zerg\""
+			"3 errors, 0 warnings. ThunderGraft won't use a file with errors.")
+	tg_add_tool_test(tgplaylist_check_lists EXIT 0 ARGS check lists.txt EXPECT "No problems found")
+	tg_add_tool_test(tgplaylist_check_unconvertible EXIT 1 ARGS check unconvertible.txt EXPECT "unconvertible.txt:2: error: there is no list <nothing>")
+	tg_add_tool_test(tgplaylist_check_files EXIT 0 ARGS check --on-disk --dir tracks ambiguous.toml
+		EXPECT
+			"ambiguous.toml:4: warning: .on.: 'music.t.\\.wav' and 'music..1\\.wav' .line 5. are equally specific"
+			"track 'music.missing\\.ogg' isn't in the given directories or archives"
+		REJECT "t1\\.ogg' isn't" "T2\\.OGG' isn't")
+	tg_add_tool_test(tgplaylist_check_absolute EXIT 1 ARGS check ambiguous.toml EXPECT "is an absolute path")
+
+	# An archive to look for tracks in, made before the test that uses it
+	add_executable(make_mpq helpers/make_mpq.cpp)
+	target_link_libraries(make_mpq PRIVATE storm)
+	if(WIN32)
+		target_link_options(make_mpq PRIVATE -static -static-libgcc -static-libstdc++)
+	endif()
+	add_test(NAME tgplaylist_make_archive COMMAND make_mpq ${CMAKE_CURRENT_BINARY_DIR}/tracks.mpq "music\\t1.ogg=tracks/Music/t1.ogg")
+	set_tests_properties(tgplaylist_make_archive PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/playlists FIXTURES_SETUP tool_archive TIMEOUT 60)
+	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+		set_tests_properties(tgplaylist_make_archive PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
+	endif()
+	tg_add_tool_test(tgplaylist_check_archive EXIT 0 ARGS check --on-disk --mpq ${CMAKE_CURRENT_BINARY_DIR}/tracks.mpq ambiguous.toml
+		EXPECT "track 'music.missing\\.ogg' isn't in" "track 'music.T2\\.OGG' isn't in"
+		REJECT "t1\\.ogg' isn't")
+	set_property(TEST tgplaylist_check_archive APPEND PROPERTY FIXTURES_REQUIRED tool_archive)
+	tg_add_tool_test(tgplaylist_check_map EXIT 0 ARGS check --map map.toml
+		EXPECT "the base file has to provide" "\"boss\" .line 5.")
+	tg_add_tool_test(tgplaylist_check_map_with_base EXIT 0 ARGS check --map map.toml --base example.toml EXPECT "No problems found")
+	tg_add_tool_test(tgplaylist_check_unreadable EXIT 1 ARGS check nothere.toml EXPECT "can't read nothere.toml")
+	tg_add_tool_test(tgplaylist_check_bad_archive EXIT 1 ARGS check --mpq nothere.mpq example.toml EXPECT "can't open the archive nothere.mpq")
+	tg_add_tool_test(tgplaylist_convert EXIT 0 ARGS convert lists.txt ${CMAKE_CURRENT_BINARY_DIR}/lists.toml
+		OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/lists.toml EXPECT_FILE ${CMAKE_CURRENT_SOURCE_DIR}/playlists/lists.expected.toml)
+	tg_add_tool_test(tgplaylist_convert_to_output EXIT 0 ARGS convert lists.txt EXPECT "\\[playlist.terran\\]")
+	tg_add_tool_test(tgplaylist_convert_errors EXIT 1 ARGS convert unconvertible.txt EXPECT "nothing was written")
+	tg_add_tool_test(tgplaylist_simulate EXIT 0 ARGS simulate example.toml example_events.txt
+		EXPECT
+			"the music .s3. plays 'music.dark_t1\\.ogg' of \"dark_terran\""
+			"report plays 'staredit.wav.report_dark\\.ogg' of \"report_dark\""
+			"s3 goes back to 'music.dark_t1\\.ogg' of \"dark_terran\" from 0:30")
+	tg_add_tool_test(tgplaylist_simulate_errors EXIT 1 ARGS simulate broken.toml example_events.txt EXPECT "wouldn't use it")
+	tg_add_tool_test(tgplaylist_usage EXIT 2 EXPECT "no command given")
+	tg_add_tool_test(tgplaylist_unknown_command EXIT 2 ARGS frobnicate EXPECT "unknown command frobnicate")
+	tg_add_tool_test(tgplaylist_help EXIT 0 ARGS --help EXPECT "tgplaylist check")
 endif()

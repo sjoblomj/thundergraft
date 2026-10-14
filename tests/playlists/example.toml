@@ -1,0 +1,44 @@
+version = 1
+
+# Transitions that apply whatever is playing
+[on]
+'music\title.wav'    = "titlelist"
+'music\terran?.wav'  = "terranlist"
+# A cue: boss.wav itself still plays, as the map intended. The music fades out
+# over 3 seconds, then "boss" plays in the music stream. This interrupts the
+# music, so "back" can return to it later.
+'staredit\wav\boss.wav' = { music = "boss", fade_out = 3 }
+
+[playlist.titlelist]
+tracks = ['music\title.ogg']  # Swap the games wav file for our own ogg file
+
+[playlist.terranlist]
+order = "shuffle"
+crossfade = 1.5
+tracks = [
+    'music\t1.ogg',
+    { file = 'music\t2.ogg', times = 2 },
+    'music\t3.ogg',
+]
+# Only while terranlist is the current playlist: darkness.wav plays as normal,
+# and the music crossfades into "dark_terran" over 3 seconds. dark_terran
+# becomes the current playlist, so from now on its transitions apply, not
+# terranlist's.
+on.'staredit\wav\darkness.wav' = { music = "dark_terran", crossfade = 3 }
+
+[playlist.dark_terran]
+tracks = ['music\dark_t1.ogg', 'music\dark_t2.ogg']
+on.'music\terran?.wav' = "dark_terran"    # stay dark when the game changes track
+on.'staredit\wav\report.wav' = "report_dark"    # and swap a transmission for a darker one
+
+[playlist.report_dark]
+tracks = ['staredit\wav\report_dark.ogg']
+
+[playlist.boss]
+play = "all"
+tracks = ['music\boss_intro.ogg', 'music\boss.ogg']
+next = "boss_end"
+
+[playlist.boss_end]
+tracks = ['music\boss_end.ogg']
+next = { play = "back", fade_in = 2 }

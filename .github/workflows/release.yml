@@ -1,5 +1,5 @@
 # Builds and tests the plugin when a tag is pushed, and publishes it as a
-# GitHub release with ThunderGraft-<tag>.qdp attached.
+# GitHub release with ThunderGraft-<tag>.qdp and tgplaylist-<tag>.exe attached.
 name: Release
 
 on:
@@ -38,6 +38,7 @@ jobs:
         id: package
         run: |
           cp build/mingw-release/bin/ThunderGraft.qdp "ThunderGraft-${GITHUB_REF_NAME}.qdp"
+          cp build/mingw-release/bin/tgplaylist.exe "tgplaylist-${GITHUB_REF_NAME}.exe"
           # The release notes are the CHANGELOG.md section for this tag, if there is one
           awk -v version="${GITHUB_REF_NAME#v}" '
             /^## / { if (found) exit; found = ($2 == version); next }
@@ -49,7 +50,9 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ThunderGraft-${{ github.ref_name }}.qdp
+          files: |
+            ThunderGraft-${{ github.ref_name }}.qdp
+            tgplaylist-${{ github.ref_name }}.exe
           body_path: release-notes.md
           # Without a CHANGELOG.md section, list the commits since the last release
           generate_release_notes: ${{ steps.package.outputs.has_notes != 'true' }}

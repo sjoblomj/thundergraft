@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(THUNDERGRAFT_BUILD_TESTS "Build the tests" ON)
+option(THUNDERGRAFT_BUILD_TOOLS "Build the tgplaylist tool" ON)
 
 # The version the plugin reports to MPQDraft. Releases are built with the tag;
 # without one, the plugin says it is a development build.
@@ -77,6 +78,17 @@ target_link_libraries(thundergraft_portable PUBLIC miniaudio)
 target_compile_definitions(thundergraft_portable PRIVATE ${TG_PLUGIN_DEFINITIONS})
 target_compile_options(thundergraft_portable PRIVATE -Wall -Wextra)
 
+if(THUNDERGRAFT_BUILD_TESTS OR THUNDERGRAFT_BUILD_TOOLS)
+	# StormLib, for reading MPQs in the tests and the tool (not the plugin, which uses the game's Storm), with its own copies of zlib and bzip2
+	set(STORM_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+	set(STORM_USE_BUNDLED_LIBRARIES ON CACHE BOOL "" FORCE)
+	set(CMAKE_DISABLE_FIND_PACKAGE_ZLIB ON)
+	set(CMAKE_DISABLE_FIND_PACKAGE_BZip2 ON)
+	add_subdirectory(${TG_THIRD_PARTY_DIR}/StormLib ${CMAKE_BINARY_DIR}/third_party/StormLib EXCLUDE_FROM_ALL)
+	# Third-party code; its warnings aren't ours
+	target_compile_options(storm PRIVATE -w)
+endif()
+
 if(WIN32)
 	enable_language(RC)
 
@@ -129,6 +141,10 @@ if(WIN32)
 		-Wl,--enable-stdcall-fixup
 		$<$<NOT:$<CONFIG:Debug>>:-s>
 	)
+endif()
+
+if(THUNDERGRAFT_BUILD_TOOLS)
+	add_subdirectory(tools)
 endif()
 
 if(THUNDERGRAFT_BUILD_TESTS)

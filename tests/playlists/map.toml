@@ -1,0 +1,9 @@
+version = 1
+
+[on]
+'staredit\wav\finale.wav' = { music = "finale", crossfade = 2 }
+'staredit\wav\boss.wav' = { music = "boss" }
+
+[playlist.finale]
+tracks = ['music\finale.ogg']
+next = "back"

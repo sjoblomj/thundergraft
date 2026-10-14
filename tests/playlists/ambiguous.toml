@@ -1,0 +1,8 @@
+version = 1
+
+[on]
+'music\t?.wav' = "a"
+'music\*1.wav' = "a"
+
+[playlist.a]
+tracks = ['music\t1.ogg', 'music/T2.OGG', 'music\missing.ogg', 'C:\absolute.ogg']

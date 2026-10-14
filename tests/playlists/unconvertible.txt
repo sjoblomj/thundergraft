@@ -1,0 +1,2 @@
+<SFPlaylist1>
+music\terran1.wav = nothing

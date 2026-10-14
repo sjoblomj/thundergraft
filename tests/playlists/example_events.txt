@@ -1,0 +1,15 @@
+# The title screen, then a Terran mission
+start music\title.wav loop
+stop
+start music\terran1.wav
+end-track
+stop
+start music\terran2.wav
+start staredit\wav\darkness.wav as cue1
+start staredit\wav\report.wav as report
+end-visit report
+wait 30
+start staredit\wav\boss.wav as cue2
+wait 3
+end-visit
+end-visit

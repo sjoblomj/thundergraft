@@ -1,0 +1,14 @@
+# Converted from lists.txt
+version = 1
+
+[on]
+'music\terran1.wav' = "terran"
+'music\terran2.wav' = "terran"
+
+[playlist.terran]
+order = "in order"
+play = "one"
+tracks = [
+    'music\mymusic1.wav',
+    'music\mymusic2.wav',
+]

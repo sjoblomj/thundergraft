@@ -1,0 +1,5 @@
+version = 1
+
+[playlist.terran]
+tracsk = ['music\t1.ogg']
+next = "zerg"
