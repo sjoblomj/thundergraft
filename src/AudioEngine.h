@@ -49,6 +49,11 @@ public:
 
 	virtual bool SeekToFrame(uint64_t nFrame) = 0;
 	virtual bool Start() = 0;
+	// Starts the sound at the moment lpPrevious plays to its end, so the two play without a gap between them. Returns false, without starting it, if that moment can't be worked out, for example because lpPrevious's length isn't known or it loops; the caller then has to start it when lpPrevious ends.
+	virtual bool StartAfter(IAudioSound &previous) = 0;
+
+	// Fades from nFrom to nTo over nMilliseconds, starting now, or when the sound starts if it hasn't yet. A negative nFrom fades from wherever the last fade has got to. Levels are linear, 0 (silent) to 1 (unchanged); the fade level multiplies the volume and muting rather than replacing them.
+	virtual void Fade(float nFrom, float nTo, uint32_t nMilliseconds) = 0;
 
 	// Linear volume, 0 (silent) to 1 (unchanged)
 	virtual void SetVolume(float nVolume) = 0;

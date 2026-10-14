@@ -179,6 +179,7 @@ namespace
 		CAudioFileVfs &m_vfs;
 		unsigned m_nFileID;
 
+		ma_engine *m_lpEngine;
 		ma_sound m_sound;
 		bool m_bSoundInitialized;
 
@@ -198,6 +199,7 @@ namespace
 		CMiniaudioSound(std::unique_ptr<IAudioFile> lpFile, CAudioFileVfs &vfs, unsigned nFileID)
 			: m_lpFile(std::move(lpFile)), m_vfs(vfs), m_nFileID(nFileID)
 		{
+			m_lpEngine = NULL;
 			m_bSoundInitialized = false;
 			m_nChannels = 0;
 			m_nSampleRate = 0;
@@ -229,6 +231,7 @@ namespace
 			if (ma_sound_init_from_file(&engine, szPath, flags, NULL, NULL, &m_sound) != MA_SUCCESS)
 				return false;
 
+			m_lpEngine = &engine;
 			m_bSoundInitialized = true;
 			m_bLoop = bLoop;
 
@@ -269,6 +272,34 @@ namespace
 
 		virtual bool Start()
 		{ return ma_sound_start(&m_sound) == MA_SUCCESS; }
+
+		virtual bool StartAfter(IAudioSound &previous)
+		{
+			CMiniaudioSound *lpPrevious = dynamic_cast<CMiniaudioSound *>(&previous);
+			if (!lpPrevious || lpPrevious->m_lpEngine != m_lpEngine || lpPrevious->m_bLoop || !lpPrevious->m_bLengthKnown)
+				return false;
+
+			ma_uint64 nCursor;
+			if (ma_sound_get_cursor_in_pcm_frames(&lpPrevious->m_sound, &nCursor) != MA_SUCCESS)
+				return false;
+
+			// The frames lpPrevious has left, in the engine's frames, which is what start times are in. Both positions move on the audio thread, so this can be off by the frames the engine mixes at a time, a few milliseconds.
+			float nPitch = ma_sound_get_pitch(&lpPrevious->m_sound);
+			if (!(nPitch > 0))
+				return false;
+
+			double nFramesLeft = (nCursor < lpPrevious->m_nLength ? (double)(lpPrevious->m_nLength - nCursor) : 0);
+			double nEngineFramesLeft = nFramesLeft * ma_engine_get_sample_rate(m_lpEngine) / lpPrevious->m_nSampleRate / nPitch;
+
+			ma_sound_set_start_time_in_pcm_frames(&m_sound, ma_engine_get_time_in_pcm_frames(m_lpEngine) + (ma_uint64)(nEngineFramesLeft + 0.5));
+			return ma_sound_start(&m_sound) == MA_SUCCESS;
+		}
+
+		virtual void Fade(float nFrom, float nTo, uint32_t nMilliseconds)
+		{
+			// miniaudio starts the fade from where the last one has got to if the start is negative
+			ma_sound_set_fade_in_milliseconds(&m_sound, nFrom < 0 ? -1.0f : nFrom, nTo, nMilliseconds);
+		}
 
 		virtual void SetVolume(float nVolume)
 		{

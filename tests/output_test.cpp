@@ -7,7 +7,10 @@
 #include "fakes/OutputMeasurement.h"
 #include "fakes/TestAudioFiles.h"
 
+#include <math.h>
+#include <chrono>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -232,4 +235,128 @@ TEST_CASE("Two sounds mix")
 	REQUIRE(measurement.bHeard);
 	CHECK(measurement.left.nFrequency == Within(TONE_FREQUENCY, 0.03));
 	CHECK(measurement.right.nFrequency == Within(TONE_FREQUENCY * 2, 0.03));
+}
+
+namespace
+{
+	// Renders until something is heard, keeping only what was heard
+	std::vector<float> RenderUntilHeard(IAudioEngine &engine)
+	{
+		std::chrono::steady_clock::time_point giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (std::chrono::steady_clock::now() < giveUp)
+		{
+			std::vector<float> block = RenderFrames(engine, 256);
+			if (!IsSilent(block))
+				return block;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+
+		FAIL("nothing was heard");
+		return std::vector<float>();
+	}
+
+	// The longest run of frames where both channels are near silent, between the first and last frames that aren't
+	uint64_t LongestSilence(const std::vector<float> &output)
+	{
+		uint64_t nFrames = output.size() / MINIAUDIO_MANUAL_CHANNELS, nLongest = 0, nRun = 0;
+		bool bHeard = false;
+		for (uint64_t iFrame = 0; iFrame < nFrames; iFrame++)
+		{
+			bool bSilent = fabsf(output[iFrame * 2]) < 1e-3f && fabsf(output[iFrame * 2 + 1]) < 1e-3f;
+			if (!bSilent)
+			{
+				if (bHeard && nRun > nLongest)
+					nLongest = nRun;
+				bHeard = true;
+				nRun = 0;
+			}
+			else
+				nRun++;
+		}
+		return nLongest;
+	}
+}
+
+TEST_CASE("Fades change the level over time, on top of the volume")
+{
+	OutputMeasurement reference = PlayAndMeasure("wav_s16_44100_stereo.wav", [](IAudioSound &sound) { sound.SetVolume(0.5f); });
+
+	std::unique_ptr<IAudioEngine> lpEngine = NewEngine();
+	std::unique_ptr<IAudioSound> lpSound = Open(*lpEngine, "wav_s16_44100_stereo.wav");
+	lpSound->SetVolume(0.5f);
+
+	SUBCASE("A fade in starts silent and ends at the volume")
+	{
+		// Set before the sound starts, it begins when the sound does
+		lpSound->Fade(0, 1, 400);
+		REQUIRE(lpSound->Start());
+		std::vector<float> output = RenderOutput(*lpEngine);
+
+		ChannelMeasurement start = MeasureChannel(output, 0, 0, 1500);
+		ChannelMeasurement middle = MeasureChannel(output, 0, 8000, 1500);
+		ChannelMeasurement end = MeasureChannel(output, 0, TONE_FRAMES - 3500, 1500);
+		CHECK(start.nRms < reference.left.nRms * 0.15f);
+		CHECK(middle.nRms == Within(reference.left.nRms * 0.5f, 0.25));
+		CHECK(end.nRms == Within(reference.left.nRms, 0.05));
+	}
+
+	SUBCASE("A fade out from where it is goes to silence, and the sound carries on silently")
+	{
+		REQUIRE(lpSound->Start());
+		std::vector<float> output = RenderUntilHeard(*lpEngine);
+		lpSound->Fade(-1, 0, 100);
+		// Well short of the end of the half-second tone
+		std::vector<float> rest = RenderFrames(*lpEngine, 10000);
+		output.insert(output.end(), rest.begin(), rest.end());
+
+		CHECK(MeasureChannel(output, 0, 0, 256).nRms == Within(reference.left.nRms, 0.1));
+		// 100 ms is 4410 frames
+		CHECK(MeasureChannel(output, 0, 6000, 4000).nRms < 1e-4f);
+		CHECK(lpSound->IsPlaying());
+	}
+
+	SUBCASE("Muting still works during a fade")
+	{
+		lpSound->Fade(0, 1, 400);
+		REQUIRE(lpSound->Start());
+		RenderUntilHeard(*lpEngine);
+		lpSound->SetMuted(true);
+		CHECK(IsSilent(RenderFrames(*lpEngine, 4000)));
+	}
+}
+
+TEST_CASE("A sound started after another plays the moment it ends, without a gap")
+{
+	std::unique_ptr<IAudioEngine> lpEngine = NewEngine();
+	std::unique_ptr<IAudioSound> lpFirst = Open(*lpEngine, "wav_s16_44100_stereo.wav");
+	std::unique_ptr<IAudioSound> lpSecond = Open(*lpEngine, "flac_16_44100_stereo.flac");
+
+	REQUIRE(lpFirst->Start());
+	// Once the first is actually playing, so that the time it ends at is known
+	std::vector<float> output = RenderUntilHeard(*lpEngine);
+	REQUIRE(lpSecond->StartAfter(*lpFirst));
+
+	std::vector<float> rest = RenderOutput(*lpEngine, MINIAUDIO_MANUAL_SAMPLE_RATE * 3);
+	output.insert(output.end(), rest.begin(), rest.end());
+
+	OutputMeasurement measurement = MeasureOutput(output);
+	// Both tones, one after the other, as one
+	CHECK(measurement.nAudibleFrames == Within(2 * TONE_FRAMES, 0.02));
+	CHECK(LongestSilence(output) < 32);
+	CHECK(measurement.left.nFrequency == Within(TONE_FREQUENCY, 0.02));
+
+	SUBCASE("Not after a looping sound, which doesn't end")
+	{
+		std::unique_ptr<IAudioSound> lpLooping = Open(*lpEngine, "wav_s16_44100_stereo.wav", true);
+		std::unique_ptr<IAudioSound> lpAfter = Open(*lpEngine, "wav_s16_44100_stereo.wav");
+		CHECK_FALSE(lpAfter->StartAfter(*lpLooping));
+	}
+
+	SUBCASE("Not after a sound of another engine")
+	{
+		std::unique_ptr<IAudioEngine> lpOtherEngine = NewEngine();
+		std::unique_ptr<IAudioSound> lpOther = Open(*lpOtherEngine, "wav_s16_44100_stereo.wav");
+		std::unique_ptr<IAudioSound> lpAfter = Open(*lpEngine, "wav_s16_44100_stereo.wav");
+		CHECK_FALSE(lpAfter->StartAfter(*lpOther));
+	}
 }
