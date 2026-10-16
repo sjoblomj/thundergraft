@@ -81,6 +81,8 @@ MPQDraft.exe
 
 Every time the game starts a sound, `ThunderGraft.log` then says which rule applied and what plays. Leave it off otherwise, as the log keeps growing for as long as the game runs.
 
+With [debug logs](README.md#settings) turned on in ThunderGraft's settings, problems and every change of music are written to the debug log instead, without setting `THUNDERGRAFT_LOG`.
+
 ## How it works
 
 The games play music, and some other sounds, by *streaming* them: StarCraft's music and map sounds that triggers play, Diablo II's music and dialogue, and so on. Each time the game starts streaming a file, ThunderGraft looks at the file's name and decides what plays: the game's own file, or one of your playlists in its place. Sound effects such as gunfire aren't streamed, and playlists can't replace them.

@@ -991,7 +991,7 @@ TEST_CASE("Late playlist: a base playlist file in an archive opened after DDA st
 }
 
 /*
-	A separate process, with settings remembered in the registry as the Configure dialog leaves them: they go to the game as a module, which turns the debug log on.
+	A separate process, with THUNDERGRAFT_AUDIO=null and settings remembered in the registry as the Configure dialog leaves them: they go to the game as a module, which turns the debug log on.
 */
 
 namespace
@@ -1037,7 +1037,7 @@ namespace
 	};
 }
 
-TEST_CASE("Settings: remembered settings go to the game as a module, and turn the debug log on")
+TEST_CASE("Settings: remembered settings go to the game as a module, and turn the debug log on, which playlists write to too")
 {
 	const char szLogName[] = "ThunderGraft test debug.log";
 	std::string logPath = GameDirectory() + szLogName;
@@ -1078,6 +1078,18 @@ TEST_CASE("Settings: remembered settings go to the game as a module, and turn th
 	CHECK(log.find("started") != std::string::npos);
 	CHECK(log.find("InitializePlugin(") != std::string::npos);
 	CHECK(log.find("PatchFunctionsInModule") != std::string::npos);
+
+	// Every transition, without THUNDERGRAFT_LOG, and in the debug log rather than ThunderGraft.log
+	EnsureEngineStarted();
+	HANDLE hFile = OpenGameFile("music\\title.wav");
+	REQUIRE(SFileDdaBegin(hFile, 0x10000, 0) == TRUE);
+	EndAndClose(hFile);
+
+	log = ReadTextFile(logPath);
+	CHECK(log.find("StartAudioEngine") != std::string::npos);
+	CHECK(log.find("start 'music\\title.wav' in stream ") != std::string::npos);
+	CHECK(log.find("[on] 'music\\title.wav' (music\\playlist.toml:3) -> \"title\"") != std::string::npos);
+	CHECK(GetFileAttributesA(LogPath().c_str()) == INVALID_FILE_ATTRIBUTES);
 
 	DeleteFileA(module.szModuleFileName);
 }

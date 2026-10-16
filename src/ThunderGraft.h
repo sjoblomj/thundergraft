@@ -104,6 +104,8 @@ private:
 	// The settings from the Configure dialog, in MPQDraft, loaded the first time they are needed
 	PluginSettings m_settings;
 	BOOL m_bSettingsLoaded;
+	// Whether the debug log is open, in the game
+	BOOL m_bDebugLog;
 
 	// Whether we have passed the destructor and hence should not do any unusual actions in the hook functions or other functions that might get called after DLL_PROCESS_DETACH (e.g. TerminatePlugin).
 	volatile BOOL m_bShutDown;

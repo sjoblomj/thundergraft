@@ -151,14 +151,16 @@ if(WIN32)
 	tg_add_test(plugin_tests "--test-case-exclude=Engine:*,Broken playlist:*,Late playlist:*,Settings:*")
 	set_property(TEST plugin_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=none)
 
-	# With settings in the registry, which the plugin then hands to the game as a module, turning the debug log on. Not at the same time as plugin_tests, which expects the default settings.
+	# With settings in the registry, which the plugin then hands to the game as a module, turning the debug log on, which playlists then write to. Not at the same time as plugin_tests, which expects the default settings.
 	add_test(NAME plugin_settings_tests COMMAND plugin_tests --test-case=Settings:*)
 	set_tests_properties(plugin_settings_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} TIMEOUT 120)
 	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
 		set_tests_properties(plugin_settings_tests PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
 	endif()
-	set_property(TEST plugin_settings_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=none)
-	set_tests_properties(plugin_tests plugin_settings_tests PROPERTIES RESOURCE_LOCK thundergraft_settings)
+	# With the audio engine, as playlists write to the debug log too. Like the engine tests, it plays a playlist next to the test program, where ThunderGraft.log would go.
+	set_property(TEST plugin_settings_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=null)
+	set_tests_properties(plugin_tests PROPERTIES RESOURCE_LOCK thundergraft_settings)
+	set_tests_properties(plugin_settings_tests PROPERTIES RESOURCE_LOCK "thundergraft_settings;thundergraft_log")
 
 	# With the audio engine on a null output device: the plugin plays the sounds itself, and playlists, writing every transition to ThunderGraft.log
 	add_test(NAME plugin_engine_tests COMMAND plugin_tests --test-case=Engine:*)

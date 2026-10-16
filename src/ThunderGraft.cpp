@@ -182,6 +182,7 @@ CThunderGraftPlugin::CThunderGraftPlugin()
 	m_nBasePlaylistAttempts = 0;
 
 	m_bSettingsLoaded = FALSE;
+	m_bDebugLog = FALSE;
 
 	m_bShutDown = FALSE;
 
@@ -232,6 +233,7 @@ void CThunderGraftPlugin::OpenDebugLog(IN IMPQDraftServer *lpMPQDraftServer)
 
 	if (!bOpened)
 		return;
+	m_bDebugLog = TRUE;
 
 	char szGame[MAX_PATH] = "";
 	GetModuleFileNameA(NULL, szGame, sizeof(szGame));
@@ -261,6 +263,8 @@ void CThunderGraftPlugin::StartAudioEngine()
 			storm.SFileOpenFileEx = SFileOpenFileEx;
 
 			m_log.Initialize(BUILD_STRING, GameDirectory().c_str());
+			if (m_bDebugLog)
+				m_log.UseDebugLog();
 			m_player.Initialize(storm, lpEngine, &m_names, &m_log);
 			LoadBasePlaylist();
 

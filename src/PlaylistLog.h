@@ -9,6 +9,8 @@
 
 	With THUNDERGRAFT_LOG=transitions in the environment, every transition is written too, which is for working out why a setup plays the wrong thing.
 
+	With debug logs turned on in the settings, all of it, transitions included, goes to the debug log instead, among what the rest of the plugin does.
+
 	No message boxes: the games run fullscreen, and a message box tends to minimise them or leave them stuck behind it.
 */
 
@@ -32,6 +34,7 @@ private:
 	HANDLE m_hFile;
 	bool m_bOpenFailed;
 	bool m_bTrace;
+	bool m_bDebugLog;
 
 	bool Open();
 	void WriteLine(const std::string &text);
@@ -43,9 +46,8 @@ public:
 
 	// lpszTitle heads the file. The log goes in lpszDirectory, which should be the game's directory, or in the temporary directory if that can't be written to.
 	void Initialize(LPCSTR lpszTitle, LPCSTR lpszDirectory);
-
-	// Where the log is, once it has been written to
-	std::string Path();
+	// Writes everything, transitions included, to the open debug log (see QDebug.h) rather than to a file of its own
+	void UseDebugLog();
 
 	void Write(const PlaylistDiagnostics &diagnostics);
 	void Write(const std::string &text);

@@ -94,7 +94,7 @@ END
 // Dialog
 //
 
-IDD_SETTINGS DIALOGEX 0, 0, 341, 368
+IDD_SETTINGS DIALOGEX 0, 0, 341, 392
 STYLE DS_SETFONT | DS_MODALFRAME | DS_SETFOREGROUND | DS_3DLOOK | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "ThunderGraft"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -102,14 +102,16 @@ BEGIN
     CONTROL         101,IDC_LOGO,"Static",SS_BITMAP | SS_CENTERIMAGE | SS_SUNKEN,8,8,325,215
     LTEXT           "Quantam (Justin Olbrantz) 2003-2011, Ojan (Johan Sj\366blom) 2026",IDC_AUTHORS,8,228,325,8
     LTEXT           "Plays MP3, Ogg Vorbis and FLAC music in Diablo, Diablo II, StarCraft and Warcraft II: Battle.net Edition. Put the music files in your mod's MPQ in place of the game's own, or add a playlist file, music\\playlist.toml. Problems with playlist files are written to ThunderGraft.log next to the game.",IDC_DESCRIPTION,8,241,325,32
-    GROUPBOX        "Settings",IDC_SETTINGSGROUP,8,278,325,56
+    GROUPBOX        "Settings",IDC_SETTINGSGROUP,8,278,325,80
     AUTOCHECKBOX    "&Debug logs",IDC_DEBUGLOG,16,290,150,10
     EDITTEXT        IDC_DEBUGLOGFILE,16,304,251,14,ES_AUTOHSCROLL
     PUSHBUTTON      "&Browse...",IDC_BROWSE,273,304,52,14
     LTEXT           "A file name without a folder puts the log in the game's folder.",IDC_DEBUGLOGHINT,16,321,309,8
-    CONTROL         "",IDC_LINE,"Static",SS_ETCHEDHORZ,8,342,325,1
-    DEFPUSHBUTTON   "OK",IDOK,227,348,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,283,348,50,14
+    CONTROL         "",IDC_SEMPQWARNINGICON,"Static",SS_ICON,16,335,11,11
+    LTEXT           "Don't make an SEMPQ for others with debug logs on: the setting goes into the SEMPQ, and every player's game would write a debug log.",IDC_SEMPQWARNING,32,335,293,16
+    CONTROL         "",IDC_LINE,"Static",SS_ETCHEDHORZ,8,366,325,1
+    DEFPUSHBUTTON   "OK",IDOK,227,372,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,283,372,50,14
 END
 
 
@@ -125,7 +127,7 @@ BEGIN
     BEGIN
         LEFTMARGIN, 7
         TOPMARGIN, 7
-        BOTTOMMARGIN, 361
+        BOTTOMMARGIN, 385
     END
 END
 #endif    // APSTUDIO_INVOKED

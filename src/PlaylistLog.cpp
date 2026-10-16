@@ -9,12 +9,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <QDebug.h>
+
 CPlaylistLog::CPlaylistLog()
 {
 	InitializeCriticalSection(&m_csLock);
 	m_hFile = INVALID_HANDLE_VALUE;
 	m_bOpenFailed = false;
 	m_bTrace = false;
+	m_bDebugLog = false;
 }
 
 void CPlaylistLog::Initialize(LPCSTR lpszTitle, LPCSTR lpszDirectory)
@@ -28,6 +31,14 @@ void CPlaylistLog::Initialize(LPCSTR lpszTitle, LPCSTR lpszDirectory)
 	GetEnvironmentVariableA("THUNDERGRAFT_LOG", szSetting, sizeof(szSetting));
 	m_bTrace = strstr(szSetting, "transitions") != NULL;
 
+	LeaveCriticalSection(&m_csLock);
+}
+
+void CPlaylistLog::UseDebugLog()
+{
+	EnterCriticalSection(&m_csLock);
+	m_bDebugLog = true;
+	m_bTrace = true;
 	LeaveCriticalSection(&m_csLock);
 }
 
@@ -84,7 +95,10 @@ void CPlaylistLog::WriteLine(const std::string &text)
 
 	try
 	{
-		if (Open())
+		// Which time stamps it
+		if (m_bDebugLog)
+			QDebugWriteEntry("%s", text.c_str());
+		else if (Open())
 		{
 			std::string line = text + "\r\n";
 			DWORD nWritten;
@@ -97,15 +111,6 @@ void CPlaylistLog::WriteLine(const std::string &text)
 	}
 
 	LeaveCriticalSection(&m_csLock);
-}
-
-std::string CPlaylistLog::Path()
-{
-	EnterCriticalSection(&m_csLock);
-	std::string path = (m_hFile != INVALID_HANDLE_VALUE) ? m_directory + PLAYLIST_LOG_NAME : "";
-	LeaveCriticalSection(&m_csLock);
-
-	return path;
 }
 
 void CPlaylistLog::Write(const PlaylistDiagnostics &diagnostics)
@@ -131,6 +136,12 @@ bool CPlaylistLog::TraceEnabled()
 
 void CPlaylistLog::Trace(const std::string &text)
 {
+	if (m_bDebugLog)
+	{
+		WriteLine(text);
+		return;
+	}
+
 	SYSTEMTIME now;
 	GetLocalTime(&now);
 	char szTime[32];

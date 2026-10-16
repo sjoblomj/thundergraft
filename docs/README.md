@@ -30,11 +30,11 @@ ThunderGraft also reads the `playlist.txt` files of ShadowFlare's Playlist Plugi
 
 Select ThunderGraft in MPQDraft's list of plugins and click **Configure** for its settings:
 
-- **Debug logs**: writes what ThunderGraft does as the game runs (the functions it hooks, the sounds the game starts and stops, the playlist files it reads) to a file, for tracking down problems with ThunderGraft itself. It is off by default. Give the log a full path, or just a file name to put it in the game's folder (or, if that can't be written to, in the Windows temporary folder). The file is started afresh each time the game starts.
+- **Debug logs**: writes what ThunderGraft does as the game runs (the functions it hooks, the sounds the game starts and stops, the playlist files it reads, and every change of music) to a file, for tracking down problems. It is off by default. Give the log a full path, or just a file name to put it in the game's folder (or, if that can't be written to, in the Windows temporary folder). The file is started afresh each time the game starts.
 
-The settings are part of the patch: they also go into an SEMPQ made with them, so turn debug logs off again before making an SEMPQ for others. MPQDraft remembers them for the next time.
+The settings are part of the patch: they also go into an SEMPQ made with them, so turn debug logs off again before making an SEMPQ for others, or every player's game will write a debug log. MPQDraft remembers them for the next time.
 
-For problems with playlist files, you don't need debug logs: those are always written to `ThunderGraft.log`.
+With debug logs on, problems with playlist files are written to the debug log instead of `ThunderGraft.log`, along with every change of music. You don't need debug logs for those, though: without them, problems go to `ThunderGraft.log`.
 
 ## Known Bugs/Side Effects
 

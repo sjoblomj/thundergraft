@@ -93,6 +93,10 @@ namespace
 			SetDlgItemTextA(hwndDlg, IDC_DEBUGLOGFILE, lpSettings->debugLogFile.c_str());
 			UpdateDebugLogControls(hwndDlg);
 
+			HICON hWarning = (HICON)LoadImage(NULL, IDI_WARNING, IMAGE_ICON, 16, 16, LR_SHARED);
+			if (hWarning)
+				SendDlgItemMessageA(hwndDlg, IDC_SEMPQWARNINGICON, STM_SETICON, (WPARAM)hWarning, 0);
+
 			return TRUE;
 		}
 
