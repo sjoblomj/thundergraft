@@ -12,9 +12,9 @@ option(THUNDERGRAFT_BUILD_TOOLS "Build the tgplaylist tool" ON)
 # The version the plugin reports to MPQDraft. Releases are built with the tag;
 # without one, the plugin says it is a development build.
 set(THUNDERGRAFT_VERSION "" CACHE STRING "Version the plugin reports, such as 2026.10.12.1")
-# MPQDraft has room for 63 characters, including "ThunderGraft v" and " Debug Build"
+# MPQDraft has room for 63 characters, including "ThunderGraft v"
 string(LENGTH "${THUNDERGRAFT_VERSION}" TG_VERSION_LENGTH)
-if(TG_VERSION_LENGTH GREATER 37)
+if(TG_VERSION_LENGTH GREATER 49)
 	message(FATAL_ERROR "THUNDERGRAFT_VERSION is too long for MPQDraft's plugin name: ${THUNDERGRAFT_VERSION}")
 endif()
 # The plugin's VERSIONINFO resource needs the version as four numbers. Take the
@@ -114,10 +114,7 @@ if(WIN32)
 	# Settings shared by the plugin and the tests that use its code
 	add_library(thundergraft_options INTERFACE)
 	target_include_directories(thundergraft_options INTERFACE ${TG_COMMON_DIR} ${TG_SOURCE_DIR})
-	target_compile_definitions(thundergraft_options INTERFACE
-		NOMINMAX
-		$<$<CONFIG:Debug>:_DEBUG>
-	)
+	target_compile_definitions(thundergraft_options INTERFACE NOMINMAX)
 	target_compile_options(thundergraft_options INTERFACE -Wall -Wextra)
 
 	# Everything except the plugin entry points, so the tests can link it
@@ -144,7 +141,6 @@ if(WIN32)
 	set_target_properties(ThunderGraft PROPERTIES
 		PREFIX ""
 		SUFFIX ".qdp"
-		OUTPUT_NAME_DEBUG ThunderGraftD
 	)
 	target_link_libraries(ThunderGraft PRIVATE thundergraft_core psapi)
 	target_compile_definitions(ThunderGraft PRIVATE ${TG_PLUGIN_DEFINITIONS})

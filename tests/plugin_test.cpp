@@ -20,11 +20,7 @@
 
 namespace
 {
-#ifdef _DEBUG
-	const DWORD EXPECTED_PLUGIN_ID = 0x3c92af17;
-#else
 	const DWORD EXPECTED_PLUGIN_ID = 0x3c92af16;
-#endif
 
 	// The resource IDs from ThunderGraft's resource.h
 	const WORD IDD_SETTINGS = 5;
@@ -184,9 +180,6 @@ TEST_CASE("The plugin identifies itself")
 	std::string strExpected = "ThunderGraft v" THUNDERGRAFT_VERSION;
 #else
 	std::string strExpected = "ThunderGraft development build";
-#endif
-#ifdef _DEBUG
-	strExpected += " Debug Build";
 #endif
 	CHECK(std::string(szName) == strExpected);
 

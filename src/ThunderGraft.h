@@ -37,13 +37,8 @@
 #else
 #define BUILD_STRING "ThunderGraft development build"
 #endif
-#ifdef _DEBUG
-#define PLUGIN_ID 0x3c92af17
-#define PLUGIN_NAME BUILD_STRING" Debug Build"
-#else
 #define PLUGIN_ID 0x3c92af16
 #define PLUGIN_NAME BUILD_STRING
-#endif
 
 #include <MPQDPluginTemplate.h>
 

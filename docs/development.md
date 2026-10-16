@@ -21,7 +21,7 @@ cmake --preset mingw-release
 cmake --build --preset mingw-release
 ```
 
-The plugin is `build/mingw-release/bin/ThunderGraft.qdp`, and the tool `build/mingw-release/bin/tgplaylist.exe`. The `mingw-debug` preset builds `ThunderGraftD.qdp` instead, which writes a log to the Windows temporary directory and has a plugin ID of its own, so both can be installed side by side.
+The plugin is `build/mingw-release/bin/ThunderGraft.qdp`, and the tool `build/mingw-release/bin/tgplaylist.exe`. The `mingw-debug` preset builds the same files, unoptimized, with debugging symbols and with assertions on, for running under a debugger. To see what the plugin does as a game runs, turn on debug logs in its [settings](README.md#settings), in either build.
 
 The plugin is linked statically and imports only DLLs that come with Windows, so it can be dropped into MPQDraft or an SEMPQ on its own. It is meant to load on Windows XP and later: the code is compiled against XP's API, and the build checks that the DLL imports nothing XP lacks. Only Wine and current Windows are actually tested so far.
 

@@ -8,7 +8,7 @@
 - Playlists: replace the games' music with playlists of your own, shuffled or in order, without gaps or with crossfades between tracks, in sequences, and with music that changes when the game plays a certain sound and goes back afterwards. StarCraft maps can bring playlists of their own. See `docs/playlists.md`
 - `tgplaylist`, a tool that checks, converts and simulates playlist files
 - Removed the StarEdit integration
-- Configure in MPQDraft now opens a settings dialog, with optional debug logs to a file of your choice
+- Configure in MPQDraft now opens a settings dialog, with optional debug logs to a file of your choice. These replace the separate debug build, `ThunderGraftD.qdp`
 - Builds with GCC (mingw-w64) on Linux or Windows, with automated tests
 
 ## 2011.7.25.1
