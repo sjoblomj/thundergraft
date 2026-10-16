@@ -162,7 +162,7 @@ if(WIN32)
 	set_tests_properties(plugin_tests PROPERTIES RESOURCE_LOCK thundergraft_settings)
 	set_tests_properties(plugin_settings_tests PROPERTIES RESOURCE_LOCK "thundergraft_settings;thundergraft_log")
 
-	# With the audio engine on a null output device: the plugin plays the sounds itself, and playlists, writing every transition to ThunderGraft.log
+	# With the audio engine on a null output device: the plugin plays the sounds itself, and playlists
 	add_test(NAME plugin_engine_tests COMMAND plugin_tests --test-case=Engine:*)
 	# With a base playlist file that has an error
 	add_test(NAME plugin_playlist_error_tests COMMAND plugin_tests "--test-case=Broken playlist:*")
@@ -176,9 +176,10 @@ if(WIN32)
 		endif()
 		set_property(TEST ${test} APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=null)
 	endforeach()
-	set_property(TEST plugin_engine_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_LOG=transitions)
+	# Both with the debug log on, to see the transitions in it
+	set_property(TEST plugin_engine_tests APPEND PROPERTY ENVIRONMENT "TG_TEST_DEBUG_LOG=ThunderGraft engine test debug.log")
 	set_property(TEST plugin_playlist_error_tests APPEND PROPERTY ENVIRONMENT TG_TEST_BROKEN_PLAYLIST=1)
-	set_property(TEST plugin_late_playlist_tests APPEND PROPERTY ENVIRONMENT TG_TEST_LATE_PLAYLIST=1 THUNDERGRAFT_LOG=transitions)
+	set_property(TEST plugin_late_playlist_tests APPEND PROPERTY ENVIRONMENT TG_TEST_LATE_PLAYLIST=1 "TG_TEST_DEBUG_LOG=ThunderGraft late playlist test debug.log")
 
 	# What the plugin DLL exports and imports
 	find_program(TG_OBJDUMP NAMES ${CMAKE_OBJDUMP} i686-w64-mingw32-objdump objdump)

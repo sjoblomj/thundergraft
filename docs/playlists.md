@@ -72,16 +72,7 @@ Errors are typing mistakes, unknown keys, values of the wrong kind, and names of
 
 **The [tgplaylist tool](#the-tgplaylist-tool) finds the same problems without starting the game**, in the same words, and can check that your tracks exist. It can also show what would play when, which is the quickest way to work out why a playlist that loads plays the wrong thing.
 
-**To see every change of music as it happens**, set the environment variable `THUNDERGRAFT_LOG` to `transitions` before starting the game, for example by starting MPQDraft from a command prompt:
-
-```
-set THUNDERGRAFT_LOG=transitions
-MPQDraft.exe
-```
-
-Every time the game starts a sound, `ThunderGraft.log` then says which rule applied and what plays. Leave it off otherwise, as the log keeps growing for as long as the game runs.
-
-With [debug logs](README.md#settings) turned on in ThunderGraft's settings, problems and every change of music are written to the debug log instead, without setting `THUNDERGRAFT_LOG`.
+**To see every change of music as it happens**, turn on [debug logs](README.md#settings) in ThunderGraft's settings. Every time the game starts a sound, the debug log then says which rule applied and what plays, and problems with playlist files are written there instead of to `ThunderGraft.log`. Leave it off otherwise, as the log keeps growing for as long as the game runs.
 
 ## How it works
 

@@ -54,7 +54,7 @@ What the tests cover:
 | `hook_api_tests` | Import table patching, including damaged images; finding exports by ordinal, including damaged export tables; the Windows XP compatibility shim |
 | `plugin_tests` | The built plugin loaded into a stand-in game with a fake `Storm.dll`: exports, the plugin interface, that the hooks are installed, that the hooks on opening files pass results and errors through and chain with other plugins' hooks before and after ThunderGraft's (one of them redirecting opens as MPQDraft does), and that without an audio engine everything is forwarded to Storm |
 | `plugin_settings_tests` | The same, with settings remembered in the registry as the Configure dialog leaves them: the plugin hands them to MPQDraft as a module, and with that module in the game, writes the debug log |
-| `plugin_engine_tests` | The same, with the audio engine on a null output device, playing real files from disk and from an MPQ through the fake Storm, whose file functions are StormLib's; and playlists: a base playlist file in an MPQ, a cue and `back`, a map's playlist file while its MPQ is open, and the transitions in `ThunderGraft.log` |
+| `plugin_engine_tests` | The same, with the audio engine on a null output device, playing real files from disk and from an MPQ through the fake Storm, whose file functions are StormLib's; and playlists: a base playlist file in an MPQ, a cue and `back`, a map's playlist file while its MPQ is open, and the transitions in the debug log |
 | `plugin_playlist_error_tests` | The same, with a base playlist file that has an error: the game's music plays, and `ThunderGraft.log` says why |
 | `plugin_late_playlist_tests` | The same, with the base playlist file in an MPQ opened after DDA is initialized, outside the game's imports, as MPQDraft does |
 | `plugin_dll_check` | The plugin's exports and imports |
@@ -81,9 +81,7 @@ The `THUNDERGRAFT_AUDIO` environment variable changes how the plugin plays sound
 - `none`: no audio engine; everything is forwarded to Storm, as if ThunderGraft weren't there
 - `null`: an audio engine that plays on miniaudio's null device, which consumes the audio without playing it
 
-`THUNDERGRAFT_LOG=transitions` writes every playlist transition to `ThunderGraft.log`, next to the game, along with the problems with playlist files that are always written there.
-
-Debug builds log to `ThunderGraft log - <date and time>.txt` in the Windows temporary directory.
+Debug logs, turned on in the plugin's [settings](README.md#settings), write what the plugin does to a file of your choice, including every playlist transition and the problems with playlist files that otherwise go to `ThunderGraft.log`.
 
 ## Layout
 

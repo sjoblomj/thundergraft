@@ -7,9 +7,7 @@
 /*
 	ThunderGraft.log: problems with playlist files, in the same words as tgplaylist check, so that a user whose music doesn't change finds out why. It goes next to the game, or in the temporary directory if the game's directory can't be written to, and is only created once there is something to say, afresh each time the game starts.
 
-	With THUNDERGRAFT_LOG=transitions in the environment, every transition is written too, which is for working out why a setup plays the wrong thing.
-
-	With debug logs turned on in the settings, all of it, transitions included, goes to the debug log instead, among what the rest of the plugin does.
+	With debug logs turned on in the settings, all of it goes to the debug log instead, among what the rest of the plugin does, and every transition is written too, which is for working out why a setup plays the wrong thing.
 
 	No message boxes: the games run fullscreen, and a message box tends to minimise them or leave them stuck behind it.
 */

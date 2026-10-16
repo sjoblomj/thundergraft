@@ -7,7 +7,6 @@
 #include "PlaylistLog.h"
 
 #include <stdio.h>
-#include <string.h>
 
 #include <QDebug.h>
 
@@ -26,10 +25,6 @@ void CPlaylistLog::Initialize(LPCSTR lpszTitle, LPCSTR lpszDirectory)
 
 	m_title = lpszTitle ? lpszTitle : "";
 	m_directory = lpszDirectory ? lpszDirectory : "";
-
-	char szSetting[64] = "";
-	GetEnvironmentVariableA("THUNDERGRAFT_LOG", szSetting, sizeof(szSetting));
-	m_bTrace = strstr(szSetting, "transitions") != NULL;
 
 	LeaveCriticalSection(&m_csLock);
 }

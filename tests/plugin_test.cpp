@@ -116,11 +116,30 @@ namespace
 	// Files and archives the engine tests set up before the audio engine starts; see EnsureEngineStarted
 	void SetUpBasePlaylist();
 
+	// The debug log the settings module turns on with TG_TEST_DEBUG_LOG, in the game's directory, or "" if it's off
+	std::string DebugLogPath();
+
 	void EnsureInitialized()
 	{
 		static bool bInitialized = false;
 		if (!bInitialized)
 		{
+			// As MPQDraft would hand the plugin a module with debug logs turned on in its settings
+			char szDebugLog[MAX_PATH] = "";
+			if (g_settingsModule.empty() && GetEnvironmentVariableA("TG_TEST_DEBUG_LOG", szDebugLog, sizeof(szDebugLog)))
+			{
+				char szTempPath[MAX_PATH] = "";
+				REQUIRE(GetTempPathA(sizeof(szTempPath), szTempPath));
+				g_settingsModule = std::string(szTempPath) + "ThunderGraft test settings " + std::to_string(GetCurrentProcessId()) + ".ini";
+				std::string settings = std::string("[ThunderGraft]\r\nDebugLog=1\r\nDebugLogFile=") + szDebugLog + "\r\n";
+				HANDLE hFile = CreateFileA(g_settingsModule.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+				REQUIRE(hFile != INVALID_HANDLE_VALUE);
+				DWORD nWritten = 0;
+				WriteFile(hFile, settings.data(), (DWORD)settings.size(), &nWritten, NULL);
+				CloseHandle(hFile);
+				DeleteFileA(DebugLogPath().c_str());
+			}
+
 			g_pfnBeforeNext = HookOpenFileEx(BeforeOpenFileEx);
 
 			static FakeServer server;
@@ -746,6 +765,19 @@ next = "back"
 		return ReadTextFile(LogPath());
 	}
 
+	std::string DebugLogPath()
+	{
+		char szDebugLog[MAX_PATH] = "";
+		if (!GetEnvironmentVariableA("TG_TEST_DEBUG_LOG", szDebugLog, sizeof(szDebugLog)))
+			return "";
+		return GameDirectory() + szDebugLog;
+	}
+
+	std::string ReadDebugLog()
+	{
+		return ReadTextFile(DebugLogPath());
+	}
+
 	void SetUpBasePlaylist()
 	{
 		// The log is written fresh each time the game starts, and only when there is something to say
@@ -929,10 +961,10 @@ TEST_CASE("Engine: a map's playlist file is used while its archive is open")
 		CHECK(SFileCloseArchive(hMap));
 	DeleteFileA(mapPath.c_str());
 
-	CHECK(ReadLog().find("map loaded: music\\playlist.toml in " + mapPath) != std::string::npos);
+	CHECK(ReadDebugLog().find("map loaded: music\\playlist.toml in " + mapPath) != std::string::npos);
 }
 
-TEST_CASE("Engine: every transition is written to ThunderGraft.log when asked to")
+TEST_CASE("Engine: with debug logs on, every transition is written to the debug log")
 {
 	EnsureEngineStarted();
 
@@ -940,12 +972,13 @@ TEST_CASE("Engine: every transition is written to ThunderGraft.log when asked to
 	REQUIRE(SFileDdaBegin(hFile, 0x10000, 0) == TRUE);
 	EndAndClose(hFile);
 
-	std::string log = ReadLog();
+	std::string log = ReadDebugLog();
 	INFO(log);
-	CHECK(log.compare(0, 12, "ThunderGraft") == 0);
 	CHECK(log.find("start 'music\\title.wav' in stream ") != std::string::npos);
 	CHECK(log.find("[on] 'music\\title.wav' (music\\playlist.toml:3) -> \"title\"") != std::string::npos);
 	CHECK(log.find("error") == std::string::npos);
+	// Nothing goes to ThunderGraft.log
+	CHECK(GetFileAttributesA(LogPath().c_str()) == INVALID_FILE_ATTRIBUTES);
 }
 
 /*
@@ -965,6 +998,8 @@ TEST_CASE("Broken playlist: the game's music plays, and ThunderGraft.log says wh
 	INFO(log);
 	CHECK(log.find("music\\playlist.toml:2: error: unknown key \"nonsense\"") != std::string::npos);
 	CHECK(log.find("The playlist file has errors, so it isn't used") != std::string::npos);
+	// Without debug logs, only problems are written
+	CHECK(log.find("start 'music\\title.wav'") == std::string::npos);
 }
 
 /*
@@ -987,7 +1022,10 @@ TEST_CASE("Late playlist: a base playlist file in an archive opened after DDA st
 	EndAndClose(hFile);
 
 	// It was found as the base file, not as a map's
-	CHECK(ReadLog().find("map loaded") == std::string::npos);
+	std::string log = ReadDebugLog();
+	INFO(log);
+	CHECK(log.find("[on] 'music\\title.wav' (music\\playlist.toml:3) -> \"title\"") != std::string::npos);
+	CHECK(log.find("map loaded") == std::string::npos);
 }
 
 /*
@@ -1079,7 +1117,7 @@ TEST_CASE("Settings: remembered settings go to the game as a module, and turn th
 	CHECK(log.find("InitializePlugin(") != std::string::npos);
 	CHECK(log.find("PatchFunctionsInModule") != std::string::npos);
 
-	// Every transition, without THUNDERGRAFT_LOG, and in the debug log rather than ThunderGraft.log
+	// Every transition, in the debug log rather than ThunderGraft.log
 	EnsureEngineStarted();
 	HANDLE hFile = OpenGameFile("music\\title.wav");
 	REQUIRE(SFileDdaBegin(hFile, 0x10000, 0) == TRUE);
