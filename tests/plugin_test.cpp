@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <string.h>
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,16 +27,30 @@ namespace
 #endif
 
 	// The resource IDs from ThunderGraft's resource.h
-	const WORD IDD_ABOUT = 5;
+	const WORD IDD_SETTINGS = 5;
 	const WORD IDB_THUNDERGRAFTLOGO = 101;
 
 	// SFILE_DDA_LOOPING
 	const DWORD DDA_LOOPING = 0x40000;
 
+	// From PluginSettings.h
+	const DWORD SETTINGS_MODULE_ID = 1;
+
+	// The settings module the fake MPQDraft hands the plugin, if any, and the modules the plugin asked for
+	std::string g_settingsModule;
+	std::vector<std::pair<DWORD, DWORD>> g_requestedModules;
+
 	struct FakeServer : public IMPQDraftServer
 	{
-		virtual BOOL WINAPI GetPluginModule(DWORD, DWORD, LPSTR)
-		{ return FALSE; }
+		virtual BOOL WINAPI GetPluginModule(DWORD dwPluginID, DWORD dwModuleID, LPSTR lpszFileName)
+		{
+			g_requestedModules.push_back(std::make_pair(dwPluginID, dwModuleID));
+			if (dwPluginID != EXPECTED_PLUGIN_ID || dwModuleID != SETTINGS_MODULE_ID || g_settingsModule.empty() || !lpszFileName)
+				return FALSE;
+
+			strcpy(lpszFileName, g_settingsModule.c_str());
+			return TRUE;
+		}
 	};
 
 	typedef BOOL (WINAPI *GetMPQDraftPluginPtr)(IMPQDraftPlugin **lppMPQDraftPlugin);
@@ -184,7 +199,7 @@ TEST_CASE("The plugin identifies itself")
 	}
 }
 
-TEST_CASE("The plugin can patch any executable and needs no extra modules")
+TEST_CASE("The plugin can patch any executable and, with the default settings, needs no extra modules")
 {
 	CHECK(Plugin()->CanPatchExecutable("StarCraft.exe"));
 	CHECK(Plugin()->ReadyForPatch());
@@ -195,15 +210,22 @@ TEST_CASE("The plugin can patch any executable and needs no extra modules")
 	CHECK_FALSE(Plugin()->GetModules(NULL, NULL));
 }
 
-TEST_CASE("The About dialog and its logo are in the plugin's resources")
+TEST_CASE("The settings dialog and its logo are in the plugin's resources")
 {
-	CHECK(FindResourceA(PluginModule(), MAKEINTRESOURCEA(IDD_ABOUT), (LPCSTR)RT_DIALOG));
+	CHECK(FindResourceA(PluginModule(), MAKEINTRESOURCEA(IDD_SETTINGS), (LPCSTR)RT_DIALOG));
 	CHECK(FindResourceA(PluginModule(), MAKEINTRESOURCEA(IDB_THUNDERGRAFTLOGO), (LPCSTR)RT_BITMAP));
 }
 
 TEST_CASE("InitializePlugin rejects a null server")
 {
 	CHECK_FALSE(Plugin()->InitializePlugin(NULL));
+}
+
+TEST_CASE("InitializePlugin looks for its settings module")
+{
+	EnsureInitialized();
+
+	CHECK(std::find(g_requestedModules.begin(), g_requestedModules.end(), std::make_pair(EXPECTED_PLUGIN_ID, SETTINGS_MODULE_ID)) != g_requestedModules.end());
 }
 
 TEST_CASE("InitializePlugin hooks the DDA functions in the game's import table")
@@ -696,17 +718,24 @@ next = "back"
 		REQUIRE(FakeStormCreateArchiveEx(path.c_str(), local.data(), archived.data(), (DWORD)files.size()));
 	}
 
-	std::string LogPath()
+	// The directory of the test program, which stands in for the game
+	std::string GameDirectory()
 	{
 		char szPath[MAX_PATH];
 		REQUIRE(GetModuleFileNameA(NULL, szPath, sizeof(szPath)));
 		std::string path(szPath);
-		return path.substr(0, path.find_last_of("\\/") + 1) + "ThunderGraft.log";
+		return path.substr(0, path.find_last_of("\\/") + 1);
 	}
 
-	std::string ReadLog()
+	std::string LogPath()
 	{
-		HANDLE hFile = CreateFileA(LogPath().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		return GameDirectory() + "ThunderGraft.log";
+	}
+
+	// Also while the plugin is writing to it
+	std::string ReadTextFile(const std::string &path)
+	{
+		HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (hFile == INVALID_HANDLE_VALUE)
 			return "";
 
@@ -717,6 +746,11 @@ next = "back"
 		CloseHandle(hFile);
 		text.resize(nRead);
 		return text;
+	}
+
+	std::string ReadLog()
+	{
+		return ReadTextFile(LogPath());
 	}
 
 	void SetUpBasePlaylist()
@@ -961,4 +995,96 @@ TEST_CASE("Late playlist: a base playlist file in an archive opened after DDA st
 
 	// It was found as the base file, not as a map's
 	CHECK(ReadLog().find("map loaded") == std::string::npos);
+}
+
+/*
+	A separate process, with settings remembered in the registry as the Configure dialog leaves them: they go to the game as a module, which turns the debug log on.
+*/
+
+namespace
+{
+	const char SETTINGS_KEY[] = "Software\\ThunderGraft";
+
+	// Keeps the remembered settings there were, and puts them back when it goes
+	struct RememberedSettings
+	{
+		bool bExisted;
+		std::vector<std::pair<std::string, std::vector<BYTE>>> values;
+		std::vector<DWORD> types;
+
+		RememberedSettings() : bExisted(false)
+		{
+			HKEY hKey;
+			if (RegOpenKeyExA(HKEY_CURRENT_USER, SETTINGS_KEY, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
+				return;
+			bExisted = true;
+			for (const char *lpszName : { "DebugLog", "DebugLogFile" })
+			{
+				BYTE data[MAX_PATH];
+				DWORD dwType = 0, nSize = sizeof(data);
+				if (RegQueryValueExA(hKey, lpszName, NULL, &dwType, data, &nSize) == ERROR_SUCCESS)
+				{
+					values.push_back(std::make_pair(std::string(lpszName), std::vector<BYTE>(data, data + nSize)));
+					types.push_back(dwType);
+				}
+			}
+			RegCloseKey(hKey);
+		}
+
+		~RememberedSettings()
+		{
+			RegDeleteKeyA(HKEY_CURRENT_USER, SETTINGS_KEY);
+			HKEY hKey;
+			if (!bExisted || RegCreateKeyExA(HKEY_CURRENT_USER, SETTINGS_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
+				return;
+			for (size_t i = 0; i < values.size(); i++)
+				RegSetValueExA(hKey, values[i].first.c_str(), 0, types[i], values[i].second.data(), (DWORD)values[i].second.size());
+			RegCloseKey(hKey);
+		}
+	};
+}
+
+TEST_CASE("Settings: remembered settings go to the game as a module, and turn the debug log on")
+{
+	const char szLogName[] = "ThunderGraft test debug.log";
+	std::string logPath = GameDirectory() + szLogName;
+	DeleteFileA(logPath.c_str());
+
+	// Before the plugin first reads them. Whatever was there is put back afterwards, in case the tests run outside a Wine prefix of their own.
+	RememberedSettings remembered;
+	HKEY hKey;
+	REQUIRE(RegCreateKeyExA(HKEY_CURRENT_USER, SETTINGS_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS);
+	DWORD dwEnabled = 1;
+	CHECK(RegSetValueExA(hKey, "DebugLog", 0, REG_DWORD, (const BYTE *)&dwEnabled, sizeof(dwEnabled)) == ERROR_SUCCESS);
+	CHECK(RegSetValueExA(hKey, "DebugLogFile", 0, REG_SZ, (const BYTE *)szLogName, sizeof(szLogName)) == ERROR_SUCCESS);
+	RegCloseKey(hKey);
+
+	DWORD nModules = 0;
+	REQUIRE(Plugin()->GetModules(NULL, &nModules));
+	REQUIRE(nModules == 1);
+
+	MPQDRAFTPLUGINMODULE module;
+	memset(&module, 0xCC, sizeof(module));
+	REQUIRE(Plugin()->GetModules(&module, &nModules));
+	CHECK(nModules == 1);
+	CHECK(module.dwComponentID == EXPECTED_PLUGIN_ID);
+	CHECK(module.dwModuleID == SETTINGS_MODULE_ID);
+	CHECK_FALSE(module.bExecute);
+
+	std::string settings = ReadTextFile(module.szModuleFileName);
+	INFO(settings);
+	CHECK(settings.find("DebugLog=1") != std::string::npos);
+	CHECK(settings.find(std::string("DebugLogFile=") + szLogName) != std::string::npos);
+
+	// In the game, the file name alone puts the log in the game's directory
+	g_settingsModule = module.szModuleFileName;
+	EnsureInitialized();
+
+	std::string log = ReadTextFile(logPath);
+	INFO(log);
+	CHECK(log.find("started") != std::string::npos);
+	CHECK(log.find("InitializePlugin(") != std::string::npos);
+	CHECK(log.find("PatchFunctionsInModule") != std::string::npos);
+
+	DeleteFileA(module.szModuleFileName);
 }

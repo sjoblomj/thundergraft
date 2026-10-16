@@ -14,7 +14,7 @@
 #include <stdarg.h>
 
 // Functions used internally. Ignore these.
-BOOL WINAPI QDebugOpenLogFileFn(LPCSTR lpszAppName, LPSTR lpszFileName, DWORD dwBufferLen);
+BOOL WINAPI QDebugOpenLogFileFn(LPCSTR lpszFileName);
 BOOL WINAPI QDebugCloseLogFileFn();
 
 BOOL WINAPI QDebugCloseDeleteLogFileFn();
@@ -23,12 +23,11 @@ BOOL __cdecl QDebugWriteEntryFn(LPCSTR lpszFormat, va_list params);
 
 /*
 	* QDebugWriteEntry *
-	Writes a log entry to the currently open log. Entry will be on a line of its own, and will have a time and date stamp. Log entries use sprintf, so any sprintf format specification is valid. Function fails if a log file is not open, but does not assert.
-	This function is inlined to make the function be optimized out for release build.
+	Writes a log entry to the currently open log. Entry will be on a line of its own, and will have a time stamp. Log entries use sprintf, so any sprintf format specification is valid. Function fails if a log file is not open, but does not assert.
+	Logging is turned on at runtime, by opening a log file, so this costs a check of whether one is open when it isn't.
 */
 inline void QDebugWriteEntry(LPCSTR lpszFormat, ...)
 {
-#ifdef _DEBUG
 	// Simply call the real writing function with the parameter list
 	va_list params;
 	va_start(params, lpszFormat);
@@ -36,26 +35,14 @@ inline void QDebugWriteEntry(LPCSTR lpszFormat, ...)
 	QDebugWriteEntryFn(lpszFormat, params);
 
 	va_end(params);
-#else
-	(void)lpszFormat;
-#endif
 }
 
-#ifdef _DEBUG
 /*
 	* QDebugOpenLogFile *
-	Opens a log file to be used throughout the program to log various events throughout execution. The file name will be chosen by the function, and will be of the form "[app name] log - [date].[time].log", in the Windows temporary file directory. Only one log file may be open at a time, and QDebugOpenLogFile will assert if this is not the case.
+	Opens a log file to be used throughout the program to log various events throughout execution. The file is created, or emptied if it already exists, and can be read by other programs while it is open. Only one log file may be open at a time, and QDebugOpenLogFile will assert if this is not the case.
 	If the file cannot be opened, QDebugOpenLogFile returns FALSE. The other QDebug functions will fail, but these can be ignored; the program simply will not perform logging.
 */
-inline BOOL QDebugOpenLogFile(
-	// The program name to use in the log filename. Should not exceed MAX_PATH chars.
-	IN LPCTSTR lpszAppName,
-	// A buffer to receive the path of the log file created. Should be at least MAX_PATH chars.
-	OUT OPTIONAL LPSTR lpszFileName,
-	// The length of lpszFileName
-	IN OPTIONAL DWORD dwBufferLen
-)
-{ return QDebugOpenLogFileFn(lpszAppName, lpszFileName, dwBufferLen); }
+#define QDebugOpenLogFile(lpszFileName) QDebugOpenLogFileFn(lpszFileName)
 
 /*
 	* QDebugCloseLogFile *
@@ -68,12 +55,5 @@ inline BOOL QDebugOpenLogFile(
 	Closes the open log file and deletes it. This function could be used when log files should only be left when a problem occurs. Fails if there is no log file open.
 */
 #define QDebugCloseDeleteLogFile() QDebugCloseDeleteLogFileFn()
-#else
-// Stubs to omit the log function calls in release builds
-#define QDebugOpenLogFile(p1, p2, p3) (TRUE)
-#define QDebugCloseLogFile() (TRUE)
-
-#define QDebugCloseDeleteLogFile() (TRUE)
-#endif // #ifndef _DEBUG
 
 #endif // #ifndef QDEBUG_H

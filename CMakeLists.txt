@@ -126,9 +126,10 @@ if(WIN32)
 		${TG_COMMON_DIR}/QHookAPI.cpp
 		${TG_SOURCE_DIR}/DdaPlayer.cpp
 		${TG_SOURCE_DIR}/PlaylistLog.cpp
+		${TG_SOURCE_DIR}/PluginSettings.cpp
 		${TG_SOURCE_DIR}/StormFileNames.cpp
 	)
-	target_link_libraries(thundergraft_core PUBLIC thundergraft_options thundergraft_portable)
+	target_link_libraries(thundergraft_core PUBLIC thundergraft_options thundergraft_portable advapi32)
 	target_compile_definitions(thundergraft_core PRIVATE ${TG_PLUGIN_DEFINITIONS})
 
 	add_library(ThunderGraft SHARED

@@ -181,6 +181,8 @@ CThunderGraftPlugin::CThunderGraftPlugin()
 	m_bBasePlaylistSettled = FALSE;
 	m_nBasePlaylistAttempts = 0;
 
+	m_bSettingsLoaded = FALSE;
+
 	m_bShutDown = FALSE;
 
 	m_hUpdateThread = NULL;
@@ -193,6 +195,49 @@ CThunderGraftPlugin::~CThunderGraftPlugin()
 
 	// This is a very minimalistic destructor by necessity. We're inside DllMain, which drastically restricts what we can do (e.g. trying to shut down the audio engine could deadlock waiting for its threads to exit). Furthermore, we still have hooks in various functions that we can't really remove, so we can't just shut down everything here. From here on the hooks forward everything to the original functions, and anything still alive is left to be cleaned up by Windows when the process terminates.
 	m_bShutDown = TRUE;
+}
+
+PluginSettings &CThunderGraftPlugin::Settings()
+{
+	if (!m_bSettingsLoaded)
+	{
+		m_settings = LoadRememberedSettings();
+		m_bSettingsLoaded = TRUE;
+	}
+
+	return m_settings;
+}
+
+void CThunderGraftPlugin::OpenDebugLog(IN IMPQDraftServer *lpMPQDraftServer)
+{
+	// Without the module, the settings are the defaults
+	char szSettingsFile[MPQDRAFT_MAX_PATH] = "";
+	if (!lpMPQDraftServer->GetPluginModule(PLUGIN_ID, SETTINGS_MODULE_ID, szSettingsFile))
+		return;
+
+	PluginSettings settings = ReadSettingsFile(szSettingsFile);
+	if (!settings.bDebugLog)
+		return;
+
+	std::string path = ResolveLogPath(settings.debugLogFile, GameDirectory());
+	BOOL bOpened = QDebugOpenLogFile(path.c_str());
+
+	// As with ThunderGraft.log, a log meant for the game's directory goes in the temporary directory if the game's can't be written to
+	char szTempPath[MAX_PATH] = "";
+	if (!bOpened && path != settings.debugLogFile && GetTempPathA(sizeof(szTempPath), szTempPath))
+	{
+		path = ResolveLogPath(settings.debugLogFile, szTempPath);
+		bOpened = QDebugOpenLogFile(path.c_str());
+	}
+
+	if (!bOpened)
+		return;
+
+	char szGame[MAX_PATH] = "";
+	GetModuleFileNameA(NULL, szGame, sizeof(szGame));
+	SYSTEMTIME now;
+	GetLocalTime(&now);
+	QDebugWriteEntry("%s, started %04u-%02u-%02u in %s", BUILD_STRING, now.wYear, now.wMonth, now.wDay, szGame);
 }
 
 void CThunderGraftPlugin::StartAudioEngine()

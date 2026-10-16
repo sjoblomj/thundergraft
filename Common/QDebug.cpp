@@ -13,46 +13,27 @@
 #include <algorithm>
 
 // Global variables set up by QDebugOpenLogFileFn. The open and close functions aren't really thread safe, although QDebugWriteEntryFn is.
-char g_szAppName[MAX_PATH + 1];
 char g_szLogFileName[MAX_PATH + 1];
 
 HANDLE g_hLogFile = INVALID_HANDLE_VALUE;
 
-BOOL WINAPI QDebugOpenLogFileFn(LPCSTR lpszAppName, LPSTR lpszFileName, DWORD dwBufferLen)
+BOOL WINAPI QDebugOpenLogFileFn(LPCSTR lpszFileName)
 {
-	assert(lpszAppName);
+	assert(lpszFileName);
 	assert(g_hLogFile == INVALID_HANDLE_VALUE);
 
-	// Get the temporary file path
-	char szTempDirPath[MAX_PATH + 1];
-	if (!GetTempPath(sizeof(szTempDirPath), szTempDirPath))
+	if (!lpszFileName || g_hLogFile != INVALID_HANDLE_VALUE || strlen(lpszFileName) >= sizeof(g_szLogFileName))
 		return FALSE;
 
-	// Build the filename to use for the log file from the app name, the date, and the time
-	char szFileName[MAX_PATH + 1];
-	SYSTEMTIME time;
-
-	GetLocalTime(&time);
-
-	snprintf(szFileName, sizeof(szFileName), "%s\\%s log - %.4d.%.2d.%.2d.%.2d.%.2d.%.2d.%.4d.txt", szTempDirPath, lpszAppName, time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
-
-	// Create the file
-	HANDLE hLogFile = CreateFile(szFileName, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+	// Create the file, leaving it readable while it is being written
+	HANDLE hLogFile = CreateFile(lpszFileName, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hLogFile == INVALID_HANDLE_VALUE)
 		return FALSE;
 
 	// Set up the global variables
-	snprintf(g_szAppName, sizeof(g_szAppName), "%s", lpszAppName);
-	strcpy(g_szLogFileName, szFileName);
+	strcpy(g_szLogFileName, lpszFileName);
 
 	g_hLogFile = hLogFile;
-
-	// If the caller wants it, copy the filename
-	if (lpszFileName && dwBufferLen)
-		snprintf(lpszFileName, dwBufferLen, "%s", szFileName);
-
-	// It's possible that if two processes are started in sequence, they may generate the same filename and try to open that file for logging. We insert a short delay here to ensure that they will try to make different filenames.
-	Sleep(50);
 
 	return TRUE;
 }
@@ -62,9 +43,6 @@ BOOL WINAPI QDebugCloseLogFileFn()
 	// Fail quietly if a log file isn't open
 	if (g_hLogFile == INVALID_HANDLE_VALUE)
 		return FALSE;
-
-	// Delay for the same reason as in QDebugOpenLogFileFn. Yes, I actually added these delays because of observed problems with this.
-	Sleep(50);
 
 	// Close the log file and clear the global variable
 	CloseHandle(g_hLogFile);
@@ -79,8 +57,6 @@ BOOL WINAPI QDebugCloseDeleteLogFileFn()
 	// Everything the same as with QDebugCloseLogFileFn, except...
 	if (g_hLogFile == INVALID_HANDLE_VALUE)
 		return FALSE;
-
-	Sleep(50);
 
 	CloseHandle(g_hLogFile);
 
@@ -112,7 +88,7 @@ BOOL __cdecl QDebugWriteEntryFn(LPCSTR lpszFormat, va_list params)
 	// Leave room for the line break at the end. Entries too long for the buffer are truncated.
 	const DWORD nTextSpace = sizeof(szLogBuffer) - 2;
 
-	int nWritten = snprintf(szLogBuffer, nTextSpace, "%d:%d:%d.%d @%lu: ", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds, GetCurrentThreadId());
+	int nWritten = snprintf(szLogBuffer, nTextSpace, "%02u:%02u:%02u.%03u @%lu: ", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds, GetCurrentThreadId());
 	if (nWritten > 0)
 		dwStringOffset = std::min((DWORD)nWritten, nTextSpace - 1);
 

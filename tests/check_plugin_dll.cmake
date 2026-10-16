@@ -12,7 +12,7 @@ cmake_minimum_required(VERSION 3.20)
 #
 # Usage: cmake -DOBJDUMP=<objdump> -DPLUGIN=<plugin file> -P check_plugin_dll.cmake
 
-set(ALLOWED_IMPORTS kernel32.dll user32.dll msvcrt.dll psapi.dll)
+set(ALLOWED_IMPORTS kernel32.dll user32.dll msvcrt.dll psapi.dll advapi32.dll)
 
 set(POST_XP_KERNEL32_FUNCTIONS
 	GetThreadId GetProcessIdOfThread GetTickCount64 GetCurrentProcessorNumber

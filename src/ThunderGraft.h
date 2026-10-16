@@ -26,6 +26,7 @@
 #include "AudioEngine.h"
 #include "DdaPlayer.h"
 #include "PlaylistLog.h"
+#include "PluginSettings.h"
 #include "Storm.h"
 #include "StormFileNames.h"
 
@@ -105,6 +106,10 @@ private:
 	volatile BOOL m_bBasePlaylistSettled;
 	int m_nBasePlaylistAttempts;
 
+	// The settings from the Configure dialog, in MPQDraft, loaded the first time they are needed
+	PluginSettings m_settings;
+	BOOL m_bSettingsLoaded;
+
 	// Whether we have passed the destructor and hence should not do any unusual actions in the hook functions or other functions that might get called after DLL_PROCESS_DETACH (e.g. TerminatePlugin).
 	volatile BOOL m_bShutDown;
 
@@ -120,6 +125,12 @@ private:
 
 	// The reason ppfnOldFunction is LPVOID is so that variable pointers can be implicitely cast to it. Note that this function serves a double purpose - if a pfnNewFunction is specified it patches the function, otherwise it simply gets the current address of that function.
 	BOOL PatchImportEntry(IN HMODULE hHostProgram, IN HMODULE hExportModule, IN OPTIONAL LPCSTR lpszFunctionName, IN OPTIONAL DWORD nFunctionOrdinal, IN OPTIONAL LPVOID pfnNewFunction, OUT OPTIONAL LPVOID ppfnOldFunction);
+
+	// The settings, in MPQDraft
+	PluginSettings &Settings();
+
+	// Opens the debug log if the settings module MPQDraft hands the plugin in the game asks for one
+	void OpenDebugLog(IN IMPQDraftServer *lpMPQDraftServer);
 
 	// Starts the audio engine, the player and the update thread, the first time it's called
 	void StartAudioEngine();

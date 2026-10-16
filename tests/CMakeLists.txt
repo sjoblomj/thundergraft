@@ -116,6 +116,12 @@ if(WIN32)
 	target_link_options(dda_player_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	tg_add_test(dda_player_tests)
 
+	# The settings from the Configure dialog
+	add_executable(settings_tests test_main.cpp plugin_settings_test.cpp)
+	target_link_libraries(settings_tests PRIVATE thundergraft_core doctest)
+	target_link_options(settings_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
+	tg_add_test(settings_tests)
+
 	# Import table patching, against two small helper DLLs
 	tg_add_helper_dll(hook_target hook_target ${CMAKE_CURRENT_SOURCE_DIR}/helpers/hook_target.def helpers/hook_target.c)
 	tg_add_helper_dll(hook_user hook_user ${CMAKE_CURRENT_SOURCE_DIR}/helpers/hook_user.def helpers/hook_user.c)
@@ -133,7 +139,7 @@ if(WIN32)
 	target_link_options(fake_storm PRIVATE ${TG_TEST_LINK_OPTIONS})
 
 	add_executable(plugin_tests test_main.cpp plugin_test.cpp ${TG_COMMON_DIR}/QHookAPI.cpp)
-	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import doctest)
+	target_link_libraries(plugin_tests PRIVATE thundergraft_options fake_storm_import advapi32 doctest)
 	target_link_options(plugin_tests PRIVATE ${TG_TEST_LINK_OPTIONS})
 	target_compile_definitions(plugin_tests PRIVATE TG_PLUGIN_FILE="$<TARGET_FILE_NAME:ThunderGraft>")
 	if(THUNDERGRAFT_VERSION)
@@ -142,8 +148,17 @@ if(WIN32)
 	add_dependencies(plugin_tests ThunderGraft test_fixtures)
 
 	# Without an audio engine: everything is forwarded to Storm
-	tg_add_test(plugin_tests "--test-case-exclude=Engine:*,Broken playlist:*,Late playlist:*")
+	tg_add_test(plugin_tests "--test-case-exclude=Engine:*,Broken playlist:*,Late playlist:*,Settings:*")
 	set_property(TEST plugin_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=none)
+
+	# With settings in the registry, which the plugin then hands to the game as a module, turning the debug log on. Not at the same time as plugin_tests, which expects the default settings.
+	add_test(NAME plugin_settings_tests COMMAND plugin_tests --test-case=Settings:*)
+	set_tests_properties(plugin_settings_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} TIMEOUT 120)
+	if(CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+		set_tests_properties(plugin_settings_tests PROPERTIES ENVIRONMENT "${TG_WINE_ENVIRONMENT}" FIXTURES_REQUIRED wine_prefix)
+	endif()
+	set_property(TEST plugin_settings_tests APPEND PROPERTY ENVIRONMENT THUNDERGRAFT_AUDIO=none)
+	set_tests_properties(plugin_tests plugin_settings_tests PROPERTIES RESOURCE_LOCK thundergraft_settings)
 
 	# With the audio engine on a null output device: the plugin plays the sounds itself, and playlists, writing every transition to ThunderGraft.log
 	add_test(NAME plugin_engine_tests COMMAND plugin_tests --test-case=Engine:*)
