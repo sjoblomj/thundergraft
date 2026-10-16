@@ -70,7 +70,7 @@ git tag 2026.10.12.1
 git push origin 2026.10.12.1
 ```
 
-The plugin reports its version to MPQDraft as "ThunderGraft v<version>". The workflow sets it from the tag, without a leading `v`, through the `THUNDERGRAFT_VERSION` CMake variable; builds without it call themselves "ThunderGraft development build". To build a release locally, pass it yourself: `cmake --preset mingw-release -DTHUNDERGRAFT_VERSION=2026.10.12.1`.
+The plugin reports its version to MPQDraft as "ThunderGraft v<version>". The workflow sets it from the tag, without a leading `v`, through the `THUNDERGRAFT_VERSION` CMake variable; builds without it call themselves "ThunderGraft development build". The version is also in the `.qdp`'s Windows version resource (Properties → Details); its four-number file version comes from the leading numbers of the version, and is 0.0.0.0 when there are none. To build a release locally, pass it yourself: `cmake --preset mingw-release -DTHUNDERGRAFT_VERSION=2026.10.12.1`.
 
 ## Debugging
 

@@ -17,6 +17,25 @@ string(LENGTH "${THUNDERGRAFT_VERSION}" TG_VERSION_LENGTH)
 if(TG_VERSION_LENGTH GREATER 37)
 	message(FATAL_ERROR "THUNDERGRAFT_VERSION is too long for MPQDraft's plugin name: ${THUNDERGRAFT_VERSION}")
 endif()
+# The plugin's VERSIONINFO resource needs the version as four numbers. Take the
+# leading numbers of THUNDERGRAFT_VERSION, padding with zeros; a version that
+# doesn't start with a number, or a development build, is 0.0.0.0.
+set(TG_VERSION_NUMBERS "")
+if(THUNDERGRAFT_VERSION MATCHES "^[0-9]+(\\.[0-9]+)*")
+	string(REPLACE "." ";" TG_VERSION_NUMBERS "${CMAKE_MATCH_0}")
+endif()
+foreach(TG_VERSION_NUMBER IN LISTS TG_VERSION_NUMBERS)
+	if(TG_VERSION_NUMBER GREATER 65535)
+		message(FATAL_ERROR "THUNDERGRAFT_VERSION has a number above 65535, which VERSIONINFO can't hold: ${THUNDERGRAFT_VERSION}")
+	endif()
+endforeach()
+list(LENGTH TG_VERSION_NUMBERS TG_VERSION_NUMBER_COUNT)
+while(TG_VERSION_NUMBER_COUNT LESS 4)
+	list(APPEND TG_VERSION_NUMBERS 0)
+	list(LENGTH TG_VERSION_NUMBERS TG_VERSION_NUMBER_COUNT)
+endwhile()
+list(SUBLIST TG_VERSION_NUMBERS 0 4 TG_VERSION_NUMBERS)
+list(JOIN TG_VERSION_NUMBERS "," TG_VERSION_NUMBERS)
 
 # Put every executable and DLL in one directory, so test programs find the
 # plugin and the fake Storm.dll next to themselves.
@@ -128,6 +147,15 @@ if(WIN32)
 	)
 	target_link_libraries(ThunderGraft PRIVATE thundergraft_core psapi)
 	target_compile_definitions(ThunderGraft PRIVATE ${TG_PLUGIN_DEFINITIONS})
+	# For the VERSIONINFO in ThunderGraft.rc. A header rather than definitions,
+	# as windres loses the quotes around a string given with -D.
+	if(THUNDERGRAFT_VERSION)
+		set(TG_VERSION_STRING "${THUNDERGRAFT_VERSION}")
+	else()
+		set(TG_VERSION_STRING "development build")
+	endif()
+	configure_file(${TG_SOURCE_DIR}/Version.rc.h.in ${CMAKE_BINARY_DIR}/generated/Version.rc.h @ONLY)
+	target_include_directories(ThunderGraft PRIVATE ${CMAKE_BINARY_DIR}/generated)
 	if(THUNDERGRAFT_VERSION)
 		target_compile_definitions(ThunderGraft PRIVATE THUNDERGRAFT_VERSION="${THUNDERGRAFT_VERSION}")
 	endif()

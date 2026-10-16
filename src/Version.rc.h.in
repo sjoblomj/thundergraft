@@ -1,0 +1,3 @@
+// The version for the VERSIONINFO in ThunderGraft.rc, filled in by CMake
+#define TG_VERSION_NUMBERS @TG_VERSION_NUMBERS@
+#define TG_VERSION_STRING "@TG_VERSION_STRING@"
