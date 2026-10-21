@@ -85,9 +85,9 @@ namespace
 		static ma_result OnSeek(ma_vfs *, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin)
 		{
 			AudioSeekOrigin audioOrigin = AUDIO_SEEK_BEGIN;
-			if (origin == ma_seek_origin_current)
+			if (origin == MA_SEEK_CUR)
 				audioOrigin = AUDIO_SEEK_CURRENT;
-			else if (origin == ma_seek_origin_end)
+			else if (origin == MA_SEEK_END)
 				audioOrigin = AUDIO_SEEK_END;
 
 			return File(file)->Seek(offset, audioOrigin) ? MA_SUCCESS : MA_BAD_SEEK;
@@ -402,7 +402,7 @@ namespace
 
 			if (output == MINIAUDIO_OUTPUT_NULL)
 			{
-				ma_backend backends[] = { ma_backend_null };
+				ma_device_backend_config backends[] = { ma_device_backend_config_init(ma_device_backend_null, NULL) };
 				if (ma_context_init(backends, 1, NULL, &m_context) != MA_SUCCESS)
 					return false;
 
