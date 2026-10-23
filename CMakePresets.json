@@ -24,16 +24,40 @@
 			"displayName": "Native platform-independent tests",
 			"binaryDir": "${sourceDir}/build/${presetName}",
 			"cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+		},
+		{
+			"name": "native-asan",
+			"displayName": "Native tests with AddressSanitizer and UndefinedBehaviorSanitizer",
+			"inherits": "native",
+			"cacheVariables": {
+				"CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer",
+				"CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer",
+				"CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+			}
+		},
+		{
+			"name": "native-tsan",
+			"displayName": "Native tests with ThreadSanitizer",
+			"inherits": "native",
+			"cacheVariables": {
+				"CMAKE_C_FLAGS": "-fsanitize=thread",
+				"CMAKE_CXX_FLAGS": "-fsanitize=thread",
+				"CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+			}
 		}
 	],
 	"buildPresets": [
 		{ "name": "mingw-debug", "configurePreset": "mingw-debug" },
 		{ "name": "mingw-release", "configurePreset": "mingw-release" },
-		{ "name": "native", "configurePreset": "native" }
+		{ "name": "native", "configurePreset": "native" },
+		{ "name": "native-asan", "configurePreset": "native-asan" },
+		{ "name": "native-tsan", "configurePreset": "native-tsan" }
 	],
 	"testPresets": [
 		{ "name": "mingw-debug", "configurePreset": "mingw-debug", "output": { "outputOnFailure": true } },
 		{ "name": "mingw-release", "configurePreset": "mingw-release", "output": { "outputOnFailure": true } },
-		{ "name": "native", "configurePreset": "native", "output": { "outputOnFailure": true } }
+		{ "name": "native", "configurePreset": "native", "output": { "outputOnFailure": true } },
+		{ "name": "native-asan", "configurePreset": "native-asan", "output": { "outputOnFailure": true } },
+		{ "name": "native-tsan", "configurePreset": "native-tsan", "output": { "outputOnFailure": true } }
 	]
 }

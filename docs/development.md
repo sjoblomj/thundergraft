@@ -42,6 +42,16 @@ cmake --build --preset native
 ctest --preset native
 ```
 
+The `native-asan` preset builds the native tests with AddressSanitizer and UndefinedBehaviorSanitizer, and `native-tsan` with ThreadSanitizer. On recent kernels ThreadSanitizer aborts with "unexpected memory mapping" unless address space randomization is off, so run its tests with `setarch -R`:
+
+```sh
+cmake --preset native-tsan
+cmake --build --preset native-tsan
+setarch -R ctest --preset native-tsan
+```
+
+Every push and pull request is built and tested on GitHub Actions (`.github/workflows/ci.yml`): both Windows presets under Wine, and the three native presets. Warnings are errors there (`-DCMAKE_COMPILE_WARNING_AS_ERROR=ON`), as the builds have none.
+
 What the tests cover:
 
 | Test | What |

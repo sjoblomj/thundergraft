@@ -1,0 +1,69 @@
+# Builds and tests on every push and pull request: the Windows build under
+# Wine, and the platform-independent tests natively, plain and with sanitizers.
+# Warnings are errors, as both builds are free of them.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    # A plain Ubuntu image, so 32-bit Wine installs without clashing with the
+    # packages preinstalled on the runner
+    container: ubuntu:24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [mingw-debug, mingw-release]
+    steps:
+      - name: Install the toolchain and Wine
+        run: |
+          dpkg --add-architecture i386
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git cmake make g++-mingw-w64-i686 binutils-mingw-w64-i686 \
+            wine wine32:i386
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }} -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  native:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [native, native-asan, native-tsan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }} -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Test
+        run: |
+          if [ "${{ matrix.preset }}" = native-tsan ]; then
+            # ThreadSanitizer aborts with "unexpected memory mapping" under the
+            # address space randomization of recent kernels, so turn it off
+            setarch "$(uname -m)" -R ctest --preset ${{ matrix.preset }}
+          else
+            ctest --preset ${{ matrix.preset }}
+          fi
