@@ -74,7 +74,7 @@ device on the stack, but you could allocate it on the heap if that suits your si
         config.pUserData         = pMyCustomData;   // Can be accessed from the device object (device.pUserData).
 
         ma_device device;
-        if (ma_device_init(NULL, &config, &device) != MA_SUCCESS) {
+        if (ma_device_init(&config, &device) != MA_SUCCESS) {
             return -1;  // Failed to initialize the device.
         }
 
@@ -146,7 +146,6 @@ the callback:
 
     ```c
     ma_device_init()
-    ma_device_init_ex()
     ma_device_uninit()
     ma_device_start()
     ma_device_stop()
@@ -208,7 +207,7 @@ enumerating devices. The example below shows how to enumerate devices.
 
     ```c
     ma_context context;
-    if (ma_context_init(NULL, 0, NULL, &context) != MA_SUCCESS) {
+    if (ma_context_init(NULL, &context) != MA_SUCCESS) {
         // Error.
     }
 
@@ -227,6 +226,7 @@ enumerating devices. The example below shows how to enumerate devices.
     }
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.pContext           = &context;
     config.playback.pDeviceID = &pPlaybackInfos[chosenPlaybackDeviceIndex].id;
     config.playback.format    = MY_FORMAT;
     config.playback.channels  = MY_CHANNEL_COUNT;
@@ -235,7 +235,7 @@ enumerating devices. The example below shows how to enumerate devices.
     config.pUserData          = pMyCustomData;
 
     ma_device device;
-    if (ma_device_init(&context, &config, &device) != MA_SUCCESS) {
+    if (ma_device_init(&config, &device) != MA_SUCCESS) {
         // Error
     }
 
@@ -246,13 +246,13 @@ enumerating devices. The example below shows how to enumerate devices.
     ```
 
 The first thing we do in this example is initialize a `ma_context` object with `ma_context_init()`.
-The first parameter is a pointer to a list of `ma_backend` values which are used to override the
-default backend priorities. When this is NULL, as in this example, miniaudio's default priorities
-are used. The second parameter is the number of backends listed in the array pointed to by the
-first parameter. The third parameter is a pointer to a `ma_context_config` object which can be
-NULL, in which case defaults are used. The context configuration is used for setting the logging
-callback, custom memory allocation callbacks, user-defined data and some backend-specific
-configurations.
+The first parameter is a pointer to a `ma_context_config` object. When this is NULL, as in this
+example, defaults are used. The second parameter is a pointer to the context being initialized.
+The context configuration is used for setting the log, custom memory allocation callbacks,
+user-defined data and backend-specific configurations. To override the default backend priorities,
+set `ma_context_config.pBackends` to an array of `ma_device_backend_config` objects and set
+`ma_context_config.backendCount` to the number of entries. A NULL backend list uses the default
+priorities.
 
 Once the context has been initialized you can enumerate devices. In the example above we use the
 simpler `ma_context_get_devices()`, however you can also use a callback for handling devices by
@@ -266,12 +266,25 @@ The `ma_device_info` structure contains an `id` member which is the ID you pass 
 config. It also contains the name of the device which is useful for presenting a list of devices
 to the user via the UI.
 
-When creating your own context you will want to pass it to `ma_device_init()` when initializing the
-device. Passing in NULL, like we do in the first example, will result in miniaudio creating the
-context for you, which you don't want to do since you've already created a context. Note that
-internally the context is only tracked by it's pointer which means you must not change the location
+When creating your own context, set `ma_device_config.pContext` to its address before initializing
+the device. Leaving this member NULL, like we do in the first example, will result in miniaudio
+creating the context for you, which you don't want to do since you've already created a context.
+Internally the context is only tracked by its pointer which means you must not change the location
 of the `ma_context` object. If this is an issue, consider using `malloc()` to allocate memory for
 the context.
+
+When the device creates its own context, configure it through `ma_device_config.contextConfig`.
+For example, to set a backend-specific context option:
+
+    ```c
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.contextConfig.jack.pClientName = "My Application";
+
+    ma_device device;
+    ma_device_init(&config, &device);
+    ```
+
+This config is ignored when `config.pContext` is non-NULL.
 
 
 1.2. High Level API
@@ -482,6 +495,42 @@ any libraries or frameworks. The iOS build needs to be compiled as Objective-C a
 link the relevant frameworks but should compile cleanly out of the box with Xcode. Compiling
 through the command line requires linking to `-lpthread` and `-lm`.
 
+On iOS, session settings apply to the whole application. The Core Audio backend defaults to the
+Playback category and does not select a category from the device type. For capture-only use, set
+`contextConfig.coreaudio.sessionCategory` to `ma_ios_session_category_record`. For playback and
+capture, including separate playback and capture devices, use `ma_ios_session_category_play_and_record`:
+
+    ```c
+    ma_context_config contextConfig = ma_context_config_init();
+    contextConfig.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
+
+    ma_context context;
+    ma_context_init(&contextConfig, &context);
+    ```
+
+On iOS, the Playback category defaults to the main speaker when no external output is selected.
+The PlayAndRecord category defaults to the receiver (the phone's earpiece). To use the main speaker
+by default with PlayAndRecord, set the following option before initializing the context:
+
+    ```c
+    contextConfig.coreaudio.sessionCategoryOptions |= ma_ios_session_category_option_default_to_speaker;
+    ```
+
+Set `ma_device_config.pContext` to the address of this context, or copy the context config into
+`ma_device_config.contextConfig` for an internally managed context. When using multiple devices, share one
+context and choose a session category that supports all of them. Multiple contexts do not provide
+independent audio sessions: initializing one can change the shared session, and uninitializing one
+can deactivate it while another context still needs it.
+
+If the application manages AVAudioSession itself, configure and activate it before initializing
+miniaudio, and prevent miniaudio from changing its category or activation state:
+
+    ```c
+    contextConfig.coreaudio.sessionCategory = ma_ios_session_category_none;
+    contextConfig.coreaudio.noAudioSessionActivate = MA_TRUE;
+    contextConfig.coreaudio.noAudioSessionDeactivate = MA_TRUE;
+    ```
+
 Due to the way miniaudio links to frameworks at runtime, your application may not pass Apple's
 notarization process. To fix this there are two options. The first is to compile with
 `-DMA_NO_RUNTIME_LINKING` which in turn will require linking with
@@ -532,11 +581,11 @@ You cannot use `-std=c*` compiler flags, nor `-ansi`.
 You can enable the use of AudioWorklets by defining `MA_ENABLE_AUDIO_WORKLETS` and then compiling
 with the following options:
 
-    -sAUDIO_WORKLET=1 -sWASM_WORKERS=1 -sASYNCIFY
+    -sAUDIO_WORKLET=1 -sWASM_WORKERS=1
 
 An example for compiling with AudioWorklet support might look like this:
 
-    emcc program.c -o bin/program.html -DMA_ENABLE_AUDIO_WORKLETS -sAUDIO_WORKLET=1 -sWASM_WORKERS=1 -sASYNCIFY
+    emcc program.c -o bin/program.html -DMA_ENABLE_AUDIO_WORKLETS -sAUDIO_WORKLET=1 -sWASM_WORKERS=1
 
 To run locally, you'll need to use emrun:
 
@@ -1129,8 +1178,21 @@ You can implement a custom data source by implementing the functions in `ma_data
                 // pData: ma_pcm_range*
 
                 ma_pcm_range* pRange = (ma_pcm_range*)pData;
+                ma_uint64 absoluteCursor;
+
+                absoluteCursor = pCustomDataSource->rangeBegInFrames + pCustomDataSource->cursor;
+                if (absoluteCursor < pRange->begInFrames) {
+                    absoluteCursor = pRange->begInFrames;
+                }
+                if (absoluteCursor > pRange->endInFrames) {
+                    absoluteCursor = pRange->endInFrames;
+                }
+
                 pCustomDataSource->rangeBegInFrames = pRange->begInFrames;
                 pCustomDataSource->rangeEndInFrames = pRange->endInFrames;
+                pCustomDataSource->cursor = absoluteCursor - pRange->begInFrames;
+                pCustomDataSource->loopBegInFrames = 0;
+                pCustomDataSource->loopEndInFrames = ~((ma_uint64)0);
 
                 return MA_SUCCESS;
             }
@@ -1238,6 +1300,11 @@ Note that `ma_data_source_base_init()` and `ma_data_source_base_uninit()` are ne
 outside of the custom data source. It's up to the custom data source itself to call these within
 their own init/uninit functions.
 
+When `onProp` handles `MA_DATA_SOURCE_SET_RANGE`, it must reset loop points to `[0, end)`, using
+`~((ma_uint64)0)` for the end. If it has a cursor, preserve its absolute position and clamp it to
+the new range. The generic layer performs these steps only when the callback returns
+`MA_NOT_IMPLEMENTED`. An asynchronous implementation must copy the range values before returning.
+
 
 
 5. Engine
@@ -1277,7 +1344,8 @@ configure the engine with an engine config:
     ma_engine_config engineConfig;
 
     engineConfig = ma_engine_config_init();
-    engineConfig.pDevice = &myDevice;
+    engineConfig.channels   = 2;
+    engineConfig.sampleRate = 44100;
 
     result = ma_engine_init(&engineConfig, &engine);
     if (result != MA_SUCCESS) {
@@ -1285,9 +1353,49 @@ configure the engine with an engine config:
     }
     ```
 
-In the example above we're passing in a pre-initialized device. Since the caller is the one in
-control of the device's data callback, it's their responsibility to manually call
-`ma_engine_read_pcm_frames()` from inside their data callback:
+By default, the engine will create and manage a `ma_device` object internally. You can configure
+this device through the `deviceConfig` member of the engine config:
+
+    ```c
+    engineConfig = ma_engine_config_init();
+    engineConfig.deviceConfig.playback.pDeviceID = &myDeviceID;
+    engineConfig.deviceConfig.aaudio.performanceMode = ma_aaudio_performance_mode_low_latency;
+    ```
+
+The engine and device have some necessary overlapping properties. When they are non-zero at the
+engine level, they will overwrite those at the device level. Below are the relevant properties:
+
+    ```c
+    engineConfig.channels               -> engineConfig.deviceConfig.playback.channels;
+    engineConfig.sampleRate             -> engineConfig.deviceConfig.sampleRate;
+    engineConfig.processingSizeInFrames -> engineConfig.deviceConfig.periodSizeInFrames;
+    ```
+
+For example, if `engineConfig.channels` is non-zero, it will overwrite
+`engineConfig.deviceConfig.playback.channels`.
+
+The playback sample format and data callback of an engine-managed device must retain their defaults
+(`ma_format_f32` and the internal engine callback). Changing either will result in an error.
+
+If you want to use a specific device, set the ID in the device config explicitly. You will
+typically need a `ma_context` to enumerate the device IDs first. This context should also be passed
+into the engine config:
+
+    ```c
+    engineConfig.deviceConfig.pContext = pContext;
+    engineConfig.deviceConfig.playback.pDeviceID = &myDeviceID;
+    ```
+
+If you have your own pre-existing `ma_device` object and would like the engine to use it directly,
+you can pass that into the engine config, in which case the device config will be ignored:
+
+    ```c
+    engineConfig = ma_engine_config_init();
+    engineConfig.pDevice = &myDevice;
+    ```
+
+In this case, since the caller is the one in control of the device's data callback, it's their
+responsibility to manually call `ma_engine_read_pcm_frames()` from inside their data callback:
 
     ```c
     void playback_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
@@ -1316,12 +1424,16 @@ You can also use the engine independent of a device entirely:
 
 Note that when you're not using a device, you must set the channel count and sample rate in the
 config or else miniaudio won't know what to use (miniaudio will use the device to determine this
-normally). When not using a device, you need to use `ma_engine_read_pcm_frames()` to process audio
-data from the engine. This kind of setup is useful if you want to do something like offline
-processing or want to use a different audio system for playback such as SDL.
+normally). You will also need to use `ma_engine_read_pcm_frames()` to process audio data from the
+engine. This kind of setup is useful if you want to do something like offline processing or want to
+use a different audio system for playback such as SDL.
 
 When a sound is loaded it goes through a resource manager. By default the engine will initialize a
-resource manager internally, but you can also specify a pre-initialized resource manager:
+resource manager internally. Configure it through `engineConfig.resourceManagerConfig`. Decoding
+defaults to f32 with native channel counts, but these settings can be changed. The engine sets the
+decoded sample rate to its resolved sample rate and uses its own log and allocation callbacks. You
+can also specify a pre-initialized resource manager, in which case `resourceManagerConfig` is
+ignored:
 
     ```c
     ma_result result;
@@ -2084,6 +2196,10 @@ the fence, only we set `pNotification` instead of `pFence`. You can set both of 
 time and they should both work as expected. If using the `pNotification` system, you need to ensure
 your `ma_async_notification_callbacks` object stays valid.
 
+Ranges and loop points can be set in `ma_resource_manager_data_source_config` before initializing a
+stream. The worker applies these settings before it decodes the first pages. Seek positions and
+loop points are relative to the start of the range. At runtime, use
+`ma_data_source_set_range_in_pcm_frames()` and `ma_data_source_set_loop_point_in_pcm_frames()`.
 
 
 6.2. Resource Manager Implementation Details
@@ -4085,11 +4201,13 @@ a single context to many devices:
 ma_context context;
 ma_context_init(...);
 
+deviceConfig.pContext = &context;
+
 deviceConfig.dreamcast.voiceChannel = 0;
-ma_device_init(&context, &deviceConfig, &device0);
+ma_device_init(&deviceConfig, &device0);
 
 deviceConfig.dreamcast.voiceChannel = 2;    // <-- Make sure the voice channel is different between devices. Remember that a stereo device consumes two channels.
-ma_device_init(&context, &deviceConfig, &device1);
+ma_device_init(&deviceConfig, &device1);
 ```
 
 Note that the `ma_device` struct itself has memory overhead just from its own members.
@@ -7139,11 +7257,6 @@ struct ma_job
                 ma_async_notification* pDoneNotification;       /* Signalled when the data buffer has been fully decoded. */
                 ma_fence* pInitFence;                           /* Released when the data buffer has been initialized and the format/channels/rate can be retrieved. */
                 ma_fence* pDoneFence;                           /* Released when the data buffer has been fully decoded. */
-                ma_uint64 rangeBegInPCMFrames;
-                ma_uint64 rangeEndInPCMFrames;
-                ma_uint64 loopPointBegInPCMFrames;
-                ma_uint64 loopPointEndInPCMFrames;
-                ma_uint32 isLooping;
             } loadDataBuffer;
             struct
             {
@@ -7156,6 +7269,9 @@ struct ma_job
             {
                 /*ma_resource_manager_data_stream**/ void* pDataStream;
                 ma_uint64 initialSeekPoint;
+                ma_pcm_range range;
+                ma_pcm_range loopPoint;
+                ma_bool32 isLooping;
                 ma_async_notification* pInitNotification;   /* Signalled after the first two pages have been decoded and frames can be read from the stream. */
                 ma_fence* pInitFence;
             } loadDataStream;
@@ -7174,6 +7290,9 @@ struct ma_job
             {
                 /*ma_resource_manager_data_stream**/ void* pDataStream;
                 ma_uint64 frameIndex;
+                ma_pcm_range range;
+                ma_pcm_range loopPoint;
+                ma_bool32 isLooping;
             } seekDataStream;
         } resourceManager;
     } data;
@@ -7352,7 +7471,7 @@ MA_API ma_device_backend_vtable* ma_winmm_get_vtable(void);
 /* iOS/tvOS/watchOS session categories. */
 typedef enum
 {
-    ma_ios_session_category_default = 0,        /* AVAudioSessionCategoryPlayAndRecord. */
+    ma_ios_session_category_default = 0,        /* AVAudioSessionCategoryPlayback. */
     ma_ios_session_category_none,               /* Leave the session category unchanged. */
     ma_ios_session_category_ambient,            /* AVAudioSessionCategoryAmbient */
     ma_ios_session_category_solo_ambient,       /* AVAudioSessionCategorySoloAmbient */
@@ -7379,8 +7498,8 @@ typedef struct ma_context_config_coreaudio
 {
     ma_ios_session_category sessionCategory;
     ma_uint32 sessionCategoryOptions;
-    ma_bool32 noAudioSessionActivate;   /* iOS only. When set to true, does not perform an explicit [[AVAudioSession sharedInstace] setActive:true] on initialization. */
-    ma_bool32 noAudioSessionDeactivate; /* iOS only. When set to true, does not perform an explicit [[AVAudioSession sharedInstace] setActive:false] on uninitialization. */
+    ma_bool32 noAudioSessionActivate;   /* iOS only. When set to true, does not explicitly activate the audio session or automatically resume after an interruption. */
+    ma_bool32 noAudioSessionDeactivate; /* iOS only. When set to true, does not perform an explicit [[AVAudioSession sharedInstance] setActive:false] on uninitialization. */
 } ma_context_config_coreaudio;
 
 MA_API ma_context_config_coreaudio ma_context_config_coreaudio_init(void);
@@ -7620,9 +7739,9 @@ typedef enum
 typedef enum
 {
     ma_aaudio_performance_mode_default = 0,         /* Leaves the performance mode unset. */
-    ma_aaudio_performance_mode_low_latency,         /* MA_AAUDIO_PERFORMANCE_MODE_LOW_LATENCY */
-    ma_aaudio_performance_mode_none,                /* MA_AAUDIO_PERFORMANCE_MODE_NONE */
-    ma_aaudio_performance_mode_power_saving         /* MA_AAUDIO_PERFORMANCE_MODE_POWER_SAVING */
+    ma_aaudio_performance_mode_low_latency,         /* AAUDIO_PERFORMANCE_MODE_LOW_LATENCY */
+    ma_aaudio_performance_mode_none,                /* AAUDIO_PERFORMANCE_MODE_NONE */
+    ma_aaudio_performance_mode_power_saving         /* AAUDIO_PERFORMANCE_MODE_POWER_SAVING */
 } ma_aaudio_performance_mode;
 
 
@@ -7642,7 +7761,7 @@ typedef struct ma_device_config_aaudio
     ma_aaudio_allowed_capture_policy allowedCapturePolicy;
     ma_aaudio_performance_mode performanceMode;
     ma_bool32 noAutoStartAfterReroute;
-    ma_bool32 allowSetBufferCapacity;
+    ma_bool32 noSetBufferCapacity;
 } ma_device_config_aaudio;
 
 MA_API ma_device_config_aaudio ma_device_config_aaudio_init(void);
@@ -8066,7 +8185,6 @@ You cannot stop and start the device from inside the callback or else you'll get
 callback. The following APIs cannot be called from inside the callback:
 
     ma_device_init()
-    ma_device_init_ex()
     ma_device_uninit()
     ma_device_start()
     ma_device_stop()
@@ -8178,8 +8296,41 @@ MA_API void ma_device_info_add_native_data_format(ma_device_info* pDeviceInfo, m
 
 
 
+struct ma_context_config
+{
+    const ma_device_backend_config* pBackends;  /* Backends to try in priority order. NULL selects the default list. */
+    ma_uint32 backendCount;                     /* Number of entries in pBackends. Ignored when pBackends is NULL. */
+    ma_log* pLog;
+    ma_thread_priority threadPriority;
+    size_t threadStackSize;
+    void* pUserData;
+    ma_allocation_callbacks allocationCallbacks;
+
+    /* Stock backend configs. */
+    ma_context_config_wasapi     wasapi;
+    ma_context_config_dsound     dsound;
+    ma_context_config_winmm      winmm;
+    ma_context_config_coreaudio  coreaudio;
+    ma_context_config_pipewire   pipewire;
+    ma_context_config_pulseaudio pulseaudio;
+    ma_context_config_jack       jack;
+    ma_context_config_alsa       alsa;
+    ma_context_config_sndio      sndio;
+    ma_context_config_audio4     audio4;
+    ma_context_config_oss        oss;
+    ma_context_config_aaudio     aaudio;
+    ma_context_config_opensl     opensl;
+    ma_context_config_webaudio   webaudio;
+    ma_context_config_dreamcast  dreamcast;
+    ma_context_config_xaudio     xaudio;
+    ma_context_config_vita       vita;
+    ma_context_config_null       null_backend;
+};
+
 struct ma_device_config
 {
+    ma_context* pContext;               /* Optional existing context. When NULL, the device creates and owns a context. An existing context must remain valid until the device is uninitialized. */
+    ma_context_config contextConfig;    /* Used only when the device creates its own context. */
     ma_device_type deviceType;
     ma_threading_mode threadingMode;
     ma_uint32 sampleRate;
@@ -8351,35 +8502,6 @@ struct ma_device_backend_vtable
     void      (* onDeviceWakeup           )(ma_device* pDevice);
 };
 
-struct ma_context_config
-{
-    ma_log* pLog;
-    ma_thread_priority threadPriority;
-    size_t threadStackSize;
-    void* pUserData;
-    ma_allocation_callbacks allocationCallbacks;
-    
-    /* Stock backend configs. */
-    ma_context_config_wasapi     wasapi;
-    ma_context_config_dsound     dsound;
-    ma_context_config_winmm      winmm;
-    ma_context_config_coreaudio  coreaudio;
-    ma_context_config_pipewire   pipewire;
-    ma_context_config_pulseaudio pulseaudio;
-    ma_context_config_jack       jack;
-    ma_context_config_alsa       alsa;
-    ma_context_config_sndio      sndio;
-    ma_context_config_audio4     audio4;
-    ma_context_config_oss        oss;
-    ma_context_config_aaudio     aaudio;
-    ma_context_config_opensl     opensl;
-    ma_context_config_webaudio   webaudio;
-    ma_context_config_dreamcast  dreamcast;
-    ma_context_config_xaudio     xaudio;
-    ma_context_config_vita       vita;
-    ma_context_config_null       null_backend;
-};
-
 struct ma_context
 {
     ma_device_backend_vtable* pVTable;              /* New new system. */
@@ -8429,7 +8551,7 @@ struct ma_device
     ma_thread audioThread;
     ma_mutex startStopLock;
 #endif
-    ma_bool8 isOwnerOfContext;                      /* When set to true, uninitializing the device will also uninitialize the context. Set to true when NULL is passed into ma_device_init(). */
+    ma_bool8 isOwnerOfContext;                      /* When set to true, uninitializing the device will also uninitialize the context. Set to true when the device creates its own context. */
     ma_bool8 noPreSilencedOutputBuffer;
     ma_bool8 noClip;
     ma_bool8 noDisableDenormals;
@@ -8526,14 +8648,8 @@ device. There is one context to many devices, and a device is created from a con
 
 Parameters
 ----------
-pBackends (in, optional)
-    A list of backends to try initializing, in priority order. Can be NULL, in which case it uses default priority order. See examples on how to use this.
-
-backendCount (in, optional)
-    The number of items in `backend`. Ignored if `backend` is NULL.
-
 pConfig (in, optional)
-    The context configuration.
+    The context configuration. Can be NULL to use defaults.
 
 pContext (in)
     A pointer to the context object being initialized.
@@ -8551,7 +8667,7 @@ Unsafe. Do not call this function across multiple threads as some backends read 
 
 Remarks
 -------
-When `pBackends` is NULL, the default priority order will be used. Below is a list of backends in priority order:
+When `pConfig` or `pConfig->pBackends` is NULL, the default priority order will be used. Below is a list of backends in priority order:
 
     +-------------+------------------------------+--------------------------------------------------------+
     | Name        | Enum Name                    | Supported Operating Systems                            |
@@ -8575,6 +8691,15 @@ When `pBackends` is NULL, the default priority order will be used. Below is a li
 
 The context can be configured via the `pConfig` argument. The config object is initialized with `ma_context_config_init()`. Individual configuration settings
 can then be set directly on the structure. Below are the members of the `ma_context_config` object.
+
+    pBackends
+        A list of backends to try in priority order. NULL selects the default list. The array must remain
+        valid until initialization returns. The context does not retain this array. Follow each backend's
+        requirements for the lifetime of its backend-specific configuration objects.
+
+    backendCount
+        The number of entries in pBackends. Ignored when pBackends is NULL. A non-NULL list with a
+        count of zero tries no backends and returns MA_NO_BACKEND.
 
     pLog
         A pointer to the `ma_log` to post log messages to. Can be NULL if the application does not
@@ -8618,7 +8743,8 @@ can then be set directly on the structure. Below are the members of the `ma_cont
         intrusive for the end user.
 
     coreaudio.sessionCategory
-        iOS only. The session category to use for the shared AudioSession instance. Below is a list of allowable values and their Core Audio equivalents.
+        iOS only. The session category to use for the application's shared AVAudioSession instance. Defaults to Playback, regardless of device type.
+        Capture requires an explicit input-capable category, such as Record or PlayAndRecord. Below is a list of allowable values and their Core Audio equivalents.
 
         +-----------------------------------------+-------------------------------------+
         | miniaudio Token                         | Core Audio Token                    |
@@ -8629,8 +8755,8 @@ can then be set directly on the structure. Below are the members of the `ma_cont
         | ma_ios_session_category_record          | AVAudioSessionCategoryRecord        |
         | ma_ios_session_category_play_and_record | AVAudioSessionCategoryPlayAndRecord |
         | ma_ios_session_category_multi_route     | AVAudioSessionCategoryMultiRoute    |
-        | ma_ios_session_category_none            | AVAudioSessionCategoryAmbient       |
-        | ma_ios_session_category_default         | AVAudioSessionCategoryAmbient       |
+        | ma_ios_session_category_none            | Leave unchanged                     |
+        | ma_ios_session_category_default         | AVAudioSessionCategoryPlayback      |
         +-----------------------------------------+-------------------------------------+
 
     coreaudio.sessionCategoryOptions
@@ -8649,10 +8775,11 @@ can then be set directly on the structure. Below are the members of the `ma_cont
         +---------------------------------------------------------------------------+------------------------------------------------------------------+
 
     coreaudio.noAudioSessionActivate
-        iOS only. When set to true, does not perform an explicit [[AVAudioSession sharedInstace] setActive:true] on initialization.
+        iOS only. When set to true, does not explicitly activate the audio session during initialization or device start, and does not automatically
+        resume after an interruption. The application is responsible for reactivating its session and restarting the device.
 
     coreaudio.noAudioSessionDeactivate
-        iOS only. When set to true, does not perform an explicit [[AVAudioSession sharedInstace] setActive:false] on uninitialization.
+        iOS only. When set to true, does not perform an explicit [[AVAudioSession sharedInstance] setActive:false] on uninitialization.
 
     jack.pClientName
         The name of the client to pass to `jack_client_open()`.
@@ -8674,7 +8801,7 @@ The example below shows how to initialize the context using the default configur
 
 ```c
 ma_context context;
-ma_result result = ma_context_init(NULL, 0, NULL, &context);
+ma_result result = ma_context_init(NULL, &context);
 if (result != MA_SUCCESS) {
     // Error.
 }
@@ -8699,14 +8826,16 @@ ma_device_backend_config backends[] =
 };
 
 ma_log log;
-ma_log_init(&log);
-ma_log_register_callback(&log, ma_log_callback_init(my_log_callbac, pMyLogUserData));
+ma_log_init(NULL, &log);
+ma_log_register_callback(&log, ma_log_callback_init(my_log_callback, pMyLogUserData));
 
 ma_context_config config = ma_context_config_init();
+config.pBackends = backends;
+config.backendCount = sizeof(backends)/sizeof(backends[0]);
 config.pLog = &log; // Specify a custom log object in the config so any logs that are posted from ma_context_init() are captured.
 
 ma_context context;
-ma_result result = ma_context_init(backends, sizeof(backends)/sizeof(backends[0]), &config, &context);
+ma_result result = ma_context_init(&config, &context);
 if (result != MA_SUCCESS) {
     // Error.
     if (result == MA_NO_BACKEND) {
@@ -8728,7 +8857,7 @@ See Also
 ma_context_config_init()
 ma_context_uninit()
 */
-MA_API ma_result ma_context_init(const ma_device_backend_config* pBackends, ma_uint32 backendCount, const ma_context_config* pConfig, ma_context* pContext);
+MA_API ma_result ma_context_init(const ma_context_config* pConfig, ma_context* pContext);
 
 /*
 Uninitializes a context.
@@ -9074,7 +9203,6 @@ config.pUserData         = pMyUserData;
 See Also
 --------
 ma_device_init()
-ma_device_init_ex()
 */
 MA_API ma_device_config ma_device_config_init(ma_device_type deviceType);
 
@@ -9101,9 +9229,6 @@ can assume the format is the same as what you requested when you initialized the
 
 Parameters
 ----------
-pContext (in, optional)
-    A pointer to the context that owns the device. This can be null, in which case it creates a default context internally.
-
 pConfig (in)
     A pointer to the device configuration. Cannot be null. See remarks for details.
 
@@ -9129,17 +9254,24 @@ Unsafe. It is not safe to call this inside any callback.
 
 Remarks
 -------
-Setting `pContext` to NULL will result in miniaudio creating a default context internally and is equivalent to passing in a context initialized like so:
+Setting `pConfig->pContext` to NULL will result in miniaudio creating a context internally using `pConfig->contextConfig`.
+The device owns this context and uninitializes it when the device is uninitialized. Backends are tried in the order specified by
+`contextConfig.pBackends` and `contextConfig.backendCount`, or the default order when the backend list is NULL. Each backend must
+successfully initialize both the context and device before it is selected.
 
-    ```c
-    ma_context_init(NULL, 0, NULL, &context);
-    ```
-
-Do not set `pContext` to NULL if you are needing to open multiple devices. You can, however, use NULL when initializing the first device, and then use
-device.pContext for the initialization of other devices.
+For multiple devices, set `ma_device_config.pContext` to one shared context. You can also leave it NULL when initializing the first device and set it to
+that device's `pContext` for subsequent devices. The owning device must remain initialized until all devices that share its context are uninitialized.
 
 The device can be configured via the `pConfig` argument. The config object is initialized with `ma_device_config_init()`. Individual configuration settings can
 then be set directly on the structure. Below are the members of the `ma_device_config` object.
+
+    pContext
+        An optional existing context. Defaults to NULL, in which case the device creates and owns its context. An existing context remains owned by the
+        caller and must remain valid until the device is uninitialized. Use contextConfig to configure an internally created context.
+
+    contextConfig
+        The configuration for an internally created context. Initialized to defaults by ma_device_config_init(). Ignored when pContext is non-NULL.
+        See ma_context_init() for the configuration options. Backend arrays must remain valid until device initialization returns.
 
     deviceType
         Must be `ma_device_type_playback`, `ma_device_type_capture`, `ma_device_type_duplex` of `ma_device_type_loopback`.
@@ -9348,7 +9480,7 @@ config.dataCallback      = ma_data_callback;
 config.pMyUserData       = pMyUserData;
 
 ma_device device;
-ma_result result = ma_device_init(NULL, &config, &device);
+ma_result result = ma_device_init(&config, &device);
 if (result != MA_SUCCESS) {
     // Error
 }
@@ -9363,7 +9495,7 @@ enumeration.
 
 ```c
 ma_context context;
-ma_result result = ma_context_init(NULL, 0, NULL, &context);
+ma_result result = ma_context_init(NULL, &context);
 if (result != MA_SUCCESS) {
     // Error
 }
@@ -9378,6 +9510,7 @@ if (result != MA_SUCCESS) {
 // ... choose a device from pPlaybackDeviceInfos ...
 
 ma_device_config config = ma_device_config_init(ma_device_type_playback);
+config.pContext                 = &context;
 config.playback.pDeviceID       = pMyChosenDeviceID;    // <-- Get this from the `id` member of one of the `ma_device_info` objects returned by ma_context_get_devices().
 config.playback.format          = ma_format_f32;
 config.playback.channels        = 2;
@@ -9388,7 +9521,7 @@ config.periodSizeInMilliseconds = 10;
 config.periods                  = 3;
 
 ma_device device;
-result = ma_device_init(&context, &config, &device);
+result = ma_device_init(&config, &device);
 if (result != MA_SUCCESS) {
     // Error
 }
@@ -9404,65 +9537,8 @@ ma_context_init()
 ma_context_get_devices()
 ma_context_enumerate_devices()
 */
-MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pConfig, ma_device* pDevice);
+MA_API ma_result ma_device_init(const ma_device_config* pConfig, ma_device* pDevice);
 
-/*
-Initializes a device without a context, with extra parameters for controlling the configuration of the internal self-managed context.
-
-This is the same as `ma_device_init()`, only instead of a context being passed in, the parameters from `ma_context_init()` are passed in instead. This function
-allows you to configure the internally created context.
-
-
-Parameters
-----------
-pBackends (in, optional)
-    A list of backends to try initializing, in priority order. Can be NULL, in which case it uses default priority order.
-
-backendCount (in, optional)
-    The number of items in `backend`. Ignored if `backend` is NULL.
-
-pContextConfig (in, optional)
-    The context configuration.
-
-pConfig (in)
-    A pointer to the device configuration. Cannot be null. See remarks for details.
-
-pDevice (out)
-    A pointer to the device object being initialized.
-
-
-Return Value
-------------
-MA_SUCCESS if successful; any other error code otherwise.
-
-
-Thread Safety
--------------
-Unsafe. It is not safe to call this function simultaneously for different devices because some backends depend on and mutate global state. The same applies to
-calling this at the same time as `ma_device_uninit()`.
-
-
-Callback Safety
----------------
-Unsafe. It is not safe to call this inside any callback.
-
-
-Remarks
--------
-You only need to use this function if you want to configure the context differently to its defaults. You should never use this function if you want to manage
-your own context.
-
-See the documentation for `ma_context_init()` for information on the different context configuration options.
-
-
-See Also
---------
-ma_device_init()
-ma_device_uninit()
-ma_device_config_init()
-ma_context_init()
-*/
-MA_API ma_result ma_device_init_ex(const ma_device_backend_config* pBackends, ma_uint32 backendCount, const ma_context_config* pContextConfig, const ma_device_config* pConfig, ma_device* pDevice);
 
 /*
 Uninitializes a device.
@@ -11213,7 +11289,7 @@ typedef struct
         {
             const void* pData;
             ma_uint64 totalFrameCount;
-            ma_uint64 decodedFrameCount;
+            MA_ATOMIC(8, ma_uint64) decodedFrameCount;
             ma_format format;
             ma_uint32 channels;
             ma_uint32 sampleRate;
@@ -11221,7 +11297,7 @@ typedef struct
         struct
         {
             ma_paged_audio_buffer_data data;
-            ma_uint64 decodedFrameCount;
+            MA_ATOMIC(8, ma_uint64) decodedFrameCount;
             ma_uint32 sampleRate;
         } decodedPaged;
     } backend;
@@ -11249,47 +11325,56 @@ struct ma_resource_manager_data_buffer
     ma_uint32 flags;                                /* The flags that were passed used to initialize the buffer. */
     MA_ATOMIC(4, ma_uint32) executionCounter;       /* For allocating execution orders for jobs. */
     MA_ATOMIC(4, ma_uint32) executionPointer;       /* For managing the order of execution for asynchronous jobs relating to this object. Incremented as jobs complete processing. */
+    ma_pcm_range range;                             /* Requested range. Only accessed by the public API. */
+    ma_pcm_range loopPoint;                         /* Requested loop points, relative to range.begInFrames. Only accessed by the public API. */
     ma_uint64 seekTargetInPCMFrames;                /* Only updated by the public API. Never written nor read from the job thread. */
     ma_bool32 seekToCursorOnNextRead;               /* On the next read we need to seek to the frame cursor. */
+    ma_bool32 isConnectorStateDirty;                /* Apply requested settings before using the published connector. Only accessed by the public API. */
     MA_ATOMIC(4, ma_result) result;                 /* Keeps track of a result of decoding. Set to MA_BUSY while the buffer is still loading. Set to MA_SUCCESS when loading is finished successfully. Otherwise set to some other code. */
     MA_ATOMIC(4, ma_bool32) isLooping;              /* Can be read and written by different threads at the same time. Must be used atomically. */
     ma_atomic_bool32 isConnectorInitialized;        /* Used for asynchronous loading to ensure we don't try to initialize the connector multiple times while waiting for the node to fully load. */
     union
     {
-        ma_decoder decoder;                 /* Supply type is ma_resource_manager_data_supply_type_encoded */
-        ma_audio_buffer buffer;             /* Supply type is ma_resource_manager_data_supply_type_decoded */
-        ma_paged_audio_buffer pagedBuffer;  /* Supply type is ma_resource_manager_data_supply_type_decoded_paged */
+        ma_decoder decoder;                         /* Supply type is ma_resource_manager_data_supply_type_encoded */
+        ma_audio_buffer buffer;                     /* Supply type is ma_resource_manager_data_supply_type_decoded */
+        ma_paged_audio_buffer pagedBuffer;          /* Supply type is ma_resource_manager_data_supply_type_decoded_paged */
     } connector;    /* Connects this object to the node's data supply. */
 };
 
 struct ma_resource_manager_data_stream
 {
-    ma_data_source_base ds;                     /* Base data source. A data stream is a data source. */
-    ma_resource_manager* pResourceManager;      /* A pointer to the resource manager that owns this data stream. */
-    ma_uint32 flags;                            /* The flags that were passed used to initialize the stream. */
-    ma_decoder decoder;                         /* Used for filling pages with data. This is only ever accessed by the job thread. The public API should never touch this. */
-    ma_bool32 isDecoderInitialized;             /* Required for determining whether or not the decoder should be uninitialized in MA_JOB_TYPE_RESOURCE_MANAGER_FREE_DATA_STREAM. */
-    ma_uint64 totalLengthInPCMFrames;           /* This is calculated when first loaded by the MA_JOB_TYPE_RESOURCE_MANAGER_LOAD_DATA_STREAM. */
-    ma_uint32 relativeCursor;                   /* The playback cursor, relative to the current page. Only ever accessed by the public API. Never accessed by the job thread. */
-    MA_ATOMIC(8, ma_uint64) absoluteCursor;     /* The playback cursor, in absolute position starting from the start of the file. */
-    ma_uint32 currentPageIndex;                 /* Toggles between 0 and 1. Index 0 is the first half of pPageData. Index 1 is the second half. Only ever accessed by the public API. Never accessed by the job thread. */
-    MA_ATOMIC(4, ma_uint32) executionCounter;   /* For allocating execution orders for jobs. */
-    MA_ATOMIC(4, ma_uint32) executionPointer;   /* For managing the order of execution for asynchronous jobs relating to this object. Incremented as jobs complete processing. */
-    char* pFilePath;                            /* We keep track of the file path for the purpose of duplication. */
+    ma_data_source_base ds;                         /* Base data source. A data stream is a data source. */
+    ma_resource_manager* pResourceManager;          /* A pointer to the resource manager that owns this data stream. */
+    ma_uint32 flags;                                /* The flags that were passed used to initialize the stream. */
+    ma_decoder decoder;                             /* Used for filling pages with data. This is only ever accessed by the job thread. The public API should never touch this. */
+    ma_bool32 isDecoderInitialized;                 /* Required for determining whether or not the decoder should be uninitialized in MA_JOB_TYPE_RESOURCE_MANAGER_FREE_DATA_STREAM. */
+    MA_ATOMIC(8, ma_uint64) totalLengthInPCMFrames; /* This is calculated when first loaded by the MA_JOB_TYPE_RESOURCE_MANAGER_LOAD_DATA_STREAM. */
+    ma_pcm_range range;                             /* Requested settings. Only accessed by the public API. */
+    ma_pcm_range loopPoint;
+    ma_bool32 appliedLooping;                       /* Looping state in the last accepted load/update job. Only accessed by the public API. */
+    ma_bool32 isDecoderLooping;                     /* Looping state applied to the decoder. Only accessed by the worker. */
+    ma_uint64 pageCursorInPCMFrames[2];             /* Cursor at the first frame of each page, relative to the range. Published by isPageValid. */
+    ma_uint64 pageLoopEndInPCMFrames[2];            /* Effective loop boundary for cursor tracking, including discovered EOF. Published by isPageValid. */
+    ma_uint32 relativeCursor;                       /* The playback cursor, relative to the current page. Only ever accessed by the public API. Never accessed by the job thread. */
+    MA_ATOMIC(8, ma_uint64) absoluteCursor;         /* The playback cursor, in absolute position starting from the start of the file. */
+    ma_uint32 currentPageIndex;                     /* Toggles between 0 and 1. Index 0 is the first half of pPageData. Index 1 is the second half. Only ever accessed by the public API. Never accessed by the job thread. */
+    MA_ATOMIC(4, ma_uint32) executionCounter;       /* For allocating execution orders for jobs. */
+    MA_ATOMIC(4, ma_uint32) executionPointer;       /* For managing the order of execution for asynchronous jobs relating to this object. Incremented as jobs complete processing. */
+    char* pFilePath;                                /* We keep track of the file path for the purpose of duplication. */
     wchar_t* pFilePathW;
 
-    /* Written by the public API, read by the job thread. */
-    MA_ATOMIC(4, ma_bool32) isLooping;          /* Whether or not the stream is looping. It's important to set the looping flag at the data stream level for smooth loop transitions. */
+    /* May be changed independently. The public read path queues an update before using new looping state. */
+    MA_ATOMIC(4, ma_bool32) isLooping;              /* Whether or not the stream is looping. It's important to set the looping flag at the data stream level for smooth loop transitions. */
 
     /* Written by the job thread, read by the public API. */
-    void* pPageData;                            /* Buffer containing the decoded data of each page. Allocated once at initialization time. */
-    MA_ATOMIC(4, ma_uint32) pageFrameCount[2];  /* The number of valid PCM frames in each page. Used to determine the last valid frame. */
+    void* pPageData;                                /* Buffer containing the decoded data of each page. Allocated once at initialization time. */
+    MA_ATOMIC(4, ma_uint32) pageFrameCount[2];      /* The number of valid PCM frames in each page. Used to determine the last valid frame. */
 
     /* Written and read by both the public API and the job thread. These must be atomic. */
-    MA_ATOMIC(4, ma_result) result;             /* Result from asynchronous loading. When loading set to MA_BUSY. When initialized set to MA_SUCCESS. When deleting set to MA_UNAVAILABLE. If an error occurs when loading, set to an error code. */
-    MA_ATOMIC(4, ma_bool32) isDecoderAtEnd;     /* Whether or not the decoder has reached the end. */
-    MA_ATOMIC(4, ma_bool32) isPageValid[2];     /* Booleans to indicate whether or not a page is valid. Set to false by the public API, set to true by the job thread. Set to false as the pages are consumed, true when they are filled. */
-    MA_ATOMIC(4, ma_bool32) seekCounter;        /* When 0, no seeking is being performed. When > 0, a seek is being performed and reading should be delayed with MA_BUSY. */
+    MA_ATOMIC(4, ma_result) result;                 /* Result from asynchronous loading. When loading set to MA_BUSY. When initialized set to MA_SUCCESS. When deleting set to MA_UNAVAILABLE. If an error occurs when loading, set to an error code. */
+    MA_ATOMIC(4, ma_bool32) isDecoderAtEnd;         /* Whether or not the decoder has reached the end. */
+    MA_ATOMIC(4, ma_bool32) isPageValid[2];         /* Booleans to indicate whether or not a page is valid. Set to false by the public API, set to true by the job thread. Set to false as the pages are consumed, true when they are filled. */
+    MA_ATOMIC(4, ma_bool32) seekCounter;            /* When 0, no seeking is being performed. When > 0, a seek is being performed and reading should be delayed with MA_BUSY. */
 };
 
 union ma_resource_manager_data_source
@@ -12067,33 +12152,28 @@ typedef struct
 {
 #if !defined(MA_NO_RESOURCE_MANAGER)
     ma_resource_manager* pResourceManager;                  /* Can be null in which case a resource manager will be created for you. */
+    ma_resource_manager_config resourceManagerConfig;       /* Used only when the engine creates its own resource manager. Defaults to f32 decoding with native channel counts. The engine sets the decoded sample rate, log, and allocation callbacks. */
 #endif
 #if !defined(MA_NO_DEVICE_IO)
-    ma_context* pContext;
-    ma_device* pDevice;                                     /* If set, the caller is responsible for calling ma_engine_data_callback() in the device's data callback. */
-    ma_device_id* pPlaybackDeviceID;                        /* The ID of the playback device to use with the default listener. */
-    ma_device_data_proc dataCallback;                       /* Can be null. Can be used to provide a custom device data callback. */
-    ma_device_notification_proc notificationCallback;
+    ma_device* pDevice;                                     /* If set, the caller is responsible for calling ma_engine_read_pcm_frames() in the device's data callback. */
+    ma_device_config deviceConfig;                          /* Used only when the engine creates its own device. Defaults to device-level clipping disabled because the engine clips by default. */
 #endif
+    ma_allocation_callbacks allocationCallbacks;
     ma_log* pLog;                                           /* When set to NULL, will use the context's log. */
     ma_uint32 listenerCount;                                /* Must be between 1 and MA_ENGINE_MAX_LISTENERS. */
-    ma_uint32 channels;                                     /* The number of channels to use when mixing and spatializing. When set to 0, will use the native channel count of the device. */
-    ma_uint32 sampleRate;                                   /* The sample rate. When set to 0 will use the native channel count of the device. */
-    ma_uint32 periodSizeInFrames;                           /* If set to something other than 0, updates will always be exactly this size. The underlying device may be a different size, but from the perspective of the mixer that won't matter.*/
-    ma_uint32 periodSizeInMilliseconds;                     /* Used if periodSizeInFrames is unset. */
+    ma_uint32 channels;                                     /* Overrides deviceConfig.playback.channels when nonzero. Required when no device is used. An existing device determines the engine channel count. */
+    ma_uint32 sampleRate;                                   /* Overrides deviceConfig.sampleRate when nonzero. Required when no device is used. An existing device determines the engine sample rate. */
+    ma_uint32 processingSizeInFrames;                       /* Overrides deviceConfig.periodSizeInFrames when nonzero. With a device, the engine uses its resolved period size. Without a device, sets the node graph processing size. */
     ma_uint32 spatializationVolumeSmoothTimeInFrames;       /* The number of frames to interpolate the gain of spatialized sounds across. If set to 0, will use gainSmoothTimeInMilliseconds. */
     ma_uint32 spatializationVolumeSmoothTimeInMilliseconds; /* When set to 0, spatializationVolumeSmoothTimeInFrames will be used. If both are set to 0, a default value will be used. */
     ma_uint32 defaultVolumeSmoothTimeInFrames;              /* Defaults to 0. Controls the default amount of smoothing to apply to volume changes to sounds. Higher values means more smoothing at the expense of higher latency (will take longer to reach the new volume). */
     ma_uint32 preMixStackSizeInBytes;                       /* A stack is used for internal processing in the node graph. This allows you to configure the size of this stack. Smaller values will reduce the maximum depth of your node graph. You should rarely need to modify this. */
-    ma_allocation_callbacks allocationCallbacks;
     ma_bool32 noAutoStart;                                  /* When set to true, requires an explicit call to ma_engine_start(). This is false by default, meaning the engine will be started automatically in ma_engine_init(). */
     ma_bool32 noDevice;                                     /* When set to true, don't create a default device. ma_engine_read_pcm_frames() can be called manually to read data. */
-    ma_bool32 noClip;                                       /* When set to true, do not clip samples. */
+    ma_bool32 noClip;                                       /* Disable engine output clipping. Defaults to false. Device-level clipping is controlled separately by deviceConfig.noClip and is disabled by default to avoid redundant clipping overhead. */
     ma_mono_expansion_mode monoExpansionMode;               /* Controls how the mono channel should be expanded to other channels when spatialization is disabled on a sound. */
-    ma_vfs* pResourceManagerVFS;                            /* A pointer to a pre-allocated VFS object to use with the resource manager. This is ignored if pResourceManager is not NULL. */
     ma_engine_process_proc onProcess;                       /* Fired at the end of each call to ma_engine_read_pcm_frames(). For engine's that manage their own internal device (the default configuration), this will be fired from the audio thread, and you do not need to call ma_engine_read_pcm_frames() manually in order to trigger this. */
     void* pProcessUserData;                                 /* User data that's passed into onProcess. */
-    ma_resampler_config resourceManagerResampling;          /* The resampling config to use with the resource manager. */
     ma_resampler_config pitchResampling;                    /* The resampling config for the pitch and Doppler effects. You will typically want this to be a fast resampler. For high quality stuff, it's recommended that you pre-resample. */
 } ma_engine_config;
 
@@ -19902,7 +19982,7 @@ MA_API ma_result ma_slot_allocator_alloc(ma_slot_allocator* pAllocator, ma_uint6
                 bitOffset = ma_ffs_32(~oldBitfield);
                 MA_ASSERT(bitOffset < 32);
 
-                newBitfield = oldBitfield | (1 << bitOffset);
+                newBitfield = oldBitfield | (1U << bitOffset);
 
                 if (ma_atomic_compare_and_swap_32(&pAllocator->pGroups[iGroup].bitfield, oldBitfield, newBitfield) == oldBitfield) {
                     ma_uint32 slotIndex;
@@ -19963,12 +20043,12 @@ MA_API ma_result ma_slot_allocator_free(ma_slot_allocator* pAllocator, ma_uint64
         ma_uint32 newBitfield;
 
         oldBitfield = ma_atomic_load_32(&pAllocator->pGroups[iGroup].bitfield);  /* <-- This copy must happen. The compiler must not optimize this away. */
-        newBitfield = oldBitfield & ~(1 << iBit);
+        newBitfield = oldBitfield & ~(1U << iBit);
 
         /* Debugging for checking for double-frees. */
         #if defined(MA_DEBUG_OUTPUT)
         {
-            if ((oldBitfield & (1 << iBit)) == 0) {
+            if ((oldBitfield & (1U << iBit)) == 0) {
                 MA_ASSERT(MA_FALSE);    /* Double free detected.*/
             }
         }
@@ -35928,7 +36008,7 @@ static void ma_device_on_write__pulseaudio(ma_pa_stream* pStream, size_t byteCou
         }
 
         result = ma_device_write_to_stream__pulseaudio(pDevice, pContextStatePulseAudio, pDeviceStatePulseAudio, pStream, &framesProcessedThisIteration);
-        if (result != MA_SUCCESS) {
+        if (result != MA_SUCCESS || framesProcessedThisIteration == 0) {
             break;
         }
 
@@ -36501,12 +36581,19 @@ static ma_result ma_device_start__pulseaudio(ma_device* pDevice)
     }
 
     if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
+        ma_uint64 framesProcessed;
+
         /*
-        We need to fill some data before uncorking. Not doing this will result in the write callback
-        never getting fired. We're not going to abort if writing fails because I still want the device
-        to get uncorked.
+        Fill all available blocks before uncorking. pa_stream_begin_write() can return less than the
+        writable size, leaving an outstanding request that may not trigger another write callback.
+        Always try to uncork, even if writing fails.
         */
-        ma_device_write_to_stream__pulseaudio(pDevice, pContextStatePulseAudio, pDeviceStatePulseAudio, pDeviceStatePulseAudio->playback.pStream, NULL);   /* No need to check the result here. Always want to fall through to an uncork. */
+        for (;;) {
+            result = ma_device_write_to_stream__pulseaudio(pDevice, pContextStatePulseAudio, pDeviceStatePulseAudio, pDeviceStatePulseAudio->playback.pStream, &framesProcessed);
+            if (result != MA_SUCCESS || framesProcessed == 0) {
+                break;
+            }
+        }
 
         result = ma_device__cork_stream__pulseaudio(pDevice, pContextStatePulseAudio, pDeviceStatePulseAudio, ma_device_type_playback, 0);
         if (result != MA_SUCCESS) {
@@ -37716,26 +37803,43 @@ typedef struct ma_context_state_coreaudio
     ma_AudioUnitRender_proc                   AudioUnitRender;
 
     AudioComponent component;
+    ma_bool32 noAudioSessionActivate;
     ma_bool32 noAudioSessionDeactivate; /* For tracking whether or not the iOS audio session should be explicitly deactivated. Set from the config in ma_context_init__coreaudio(). */
 } ma_context_state_coreaudio;
 
 typedef struct ma_device_state_coreaudio
 {
     ma_device_state_async async;
+    ma_spinlock playbackCallbackLock;
+    ma_spinlock captureCallbackLock;
+    ma_atomic_bool32 isCallbackProcessingBlocked; /* Set while stopped or while stream resources are being reconfigured. */
+    ma_atomic_uint32 requestedPlaybackFrameCap;
+    ma_atomic_uint32 requestedCaptureFrameCap;
+    ma_bool32 areAudioUnitsStopped; /* Only accessed by the device worker. */
+    #if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+    ma_spinlock interruptionLock;
+    ma_bool32 isInterrupted;
+    ma_bool32 isInterruptionRecoveryPending;
+    ma_bool32 canResumeAfterInterruption;
+    ma_uint32 interruptionGeneration;
+    #endif
     ma_uint32 deviceObjectIDPlayback;
     ma_uint32 deviceObjectIDCapture;
     AudioUnit audioUnitPlayback;
     AudioUnit audioUnitCapture;
     AudioBufferList* pAudioBufferList;          /* Only used for input devices. */
     ma_uint32 audioBufferCapInFrames;           /* Only used for input devices. The capacity in frames of each buffer in pAudioBufferList. */
-    ma_event stopEvent;
     ma_uint32 originalPeriodSizeInFrames;
     ma_uint32 originalPeriodSizeInMilliseconds;
     ma_uint32 originalPeriods;
     ma_bool32 isDefaultPlaybackDevice;
     ma_bool32 isDefaultCaptureDevice;
-    ma_atomic_bool32 isSwitchingPlaybackDevice; /* <-- Set to true when the default device has changed and miniaudio is in the process of switching. */
-    ma_atomic_bool32 isSwitchingCaptureDevice;  /* <-- Set to true when the default device has changed and miniaudio is in the process of switching. */
+    ma_atomic_bool32 isSwitchingPlaybackDevice; /* Set to true when the default device has changed and miniaudio is in the process of switching. */
+    ma_atomic_bool32 isSwitchingCaptureDevice;  /* Set to true when the default device has changed and miniaudio is in the process of switching. */
+    #if defined(MA_APPLE_DESKTOP)
+    ma_device* pTrackedDevice;
+    struct ma_device_state_coreaudio* pNextTrackedDevice;
+    #endif
     void* pNotificationHandler;                 /* Only used on mobile platforms. Obj-C object for handling route changes. */
 } ma_device_state_coreaudio;
 
@@ -37978,7 +38082,7 @@ static ma_result ma_get_channel_map_from_AudioChannelLayout(AudioChannelLayout* 
         UInt32 iBit;
         AudioChannelBitmap bitmap = pChannelLayout->mChannelBitmap;
         for (iBit = 0; iBit < 32 && iChannel < channelMapCap; ++iBit) {
-            AudioChannelBitmap bit = bitmap & (1 << iBit);
+            AudioChannelBitmap bit = bitmap & (1U << iBit);
             if (bit != 0) {
                 pChannelMap[iChannel++] = ma_channel_from_AudioChannelBit(bit);
             }
@@ -38014,24 +38118,25 @@ static ma_result ma_get_channel_map_from_AudioChannelLayout(AudioChannelLayout* 
             } break;
 
             case kAudioChannelLayoutTag_Octagonal:
-            {
-                pChannelMap[7] = MA_CHANNEL_SIDE_RIGHT;
-                pChannelMap[6] = MA_CHANNEL_SIDE_LEFT;
-            } MA_FALLTHROUGH; /* Intentional fallthrough. */
             case kAudioChannelLayoutTag_Hexagonal:
-            {
-                pChannelMap[5] = MA_CHANNEL_BACK_CENTER;
-            } MA_FALLTHROUGH; /* Intentional fallthrough. */
             case kAudioChannelLayoutTag_Pentagonal:
-            {
-                pChannelMap[4] = MA_CHANNEL_FRONT_CENTER;
-            } MA_FALLTHROUGH; /* Intentional fallthrough. */
             case kAudioChannelLayoutTag_Quadraphonic:
             {
-                pChannelMap[3] = MA_CHANNEL_BACK_RIGHT;
-                pChannelMap[2] = MA_CHANNEL_BACK_LEFT;
-                pChannelMap[1] = MA_CHANNEL_RIGHT;
-                pChannelMap[0] = MA_CHANNEL_LEFT;
+                static const ma_channel channelMap[] = {
+                    MA_CHANNEL_LEFT,
+                    MA_CHANNEL_RIGHT,
+                    MA_CHANNEL_BACK_LEFT,
+                    MA_CHANNEL_BACK_RIGHT,
+                    MA_CHANNEL_FRONT_CENTER,
+                    MA_CHANNEL_BACK_CENTER,
+                    MA_CHANNEL_SIDE_LEFT,
+                    MA_CHANNEL_SIDE_RIGHT
+                };
+                UInt32 iChannel;
+
+                for (iChannel = 0; iChannel < channelCount; iChannel += 1) {
+                    pChannelMap[iChannel] = channelMap[iChannel];
+                }
             } break;
 
             /* TODO: Add support for more tags here. */
@@ -38138,6 +38243,7 @@ static ma_result ma_get_AudioObject_uid(ma_context* pContext, AudioObjectID obje
     }
 
     if (!pContextStateCoreAudio->CFStringGetCString(uid, bufferOut, bufferSize, kCFStringEncodingUTF8)) {
+        pContextStateCoreAudio->CFRelease(uid);
         return MA_ERROR;
     }
 
@@ -38166,6 +38272,7 @@ static ma_result ma_get_AudioObject_name(ma_context* pContext, AudioObjectID obj
     }
 
     if (!pContextStateCoreAudio->CFStringGetCString(deviceName, bufferOut, bufferSize, kCFStringEncodingUTF8)) {
+        pContextStateCoreAudio->CFRelease(deviceName);
         return MA_ERROR;
     }
 
@@ -38801,13 +38908,8 @@ static ma_result ma_find_best_format__coreaudio(ma_context* pContext, AudioObjec
                         This is the case where both have the same sample rate (good) but different channel counts. Right now both have about
                         the same priority, but we need to compare the format now.
                         */
-                        if (thisSampleFormat == bestSampleFormatSoFar) {
-                            if (ma_get_format_priority_index(thisSampleFormat) < ma_get_format_priority_index(bestSampleFormatSoFar)) {
-                                bestDeviceFormatSoFar = thisDeviceFormat;
-                                continue;
-                            } else {
-                                continue;   /* No change to the best format for now. */
-                            }
+                        if (ma_get_format_priority_index(thisSampleFormat) < ma_get_format_priority_index(bestSampleFormatSoFar)) {
+                            bestDeviceFormatSoFar = thisDeviceFormat;
                         }
                     }
                 }
@@ -38871,11 +38973,9 @@ static ma_result ma_get_AudioUnit_channel_map(ma_context* pContext, AudioUnit au
 
 #if defined(MA_APPLE_DESKTOP)
 static ma_spinlock g_DeviceTrackingInitLock_CoreAudio = 0;  /* A spinlock for mutal exclusion of the init/uninit of the global tracking data. Initialization to 0 is what we need. */
-static ma_uint32   g_DeviceTrackingInitCounter_CoreAudio = 0;
-static ma_mutex    g_DeviceTrackingMutex_CoreAudio;
-static ma_device** g_ppTrackedDevices_CoreAudio = NULL;
-static ma_uint32   g_TrackedDeviceCap_CoreAudio = 0;
-static ma_uint32   g_TrackedDeviceCount_CoreAudio = 0;
+static ma_uint32 g_DeviceTrackingInitCounter_CoreAudio = 0;
+static ma_spinlock g_DeviceTrackingLock_CoreAudio = 0;
+static ma_device_state_coreaudio* g_pTrackedDevices_CoreAudio = NULL;
 
 static OSStatus ma_default_device_changed__coreaudio(AudioObjectID objectID, UInt32 addressCount, const AudioObjectPropertyAddress* pAddresses, void* pUserData)
 {
@@ -38894,17 +38994,19 @@ static OSStatus ma_default_device_changed__coreaudio(AudioObjectID objectID, UIn
         return noErr;   /* Should never hit this. */
     }
 
-    ma_mutex_lock(&g_DeviceTrackingMutex_CoreAudio);
+    ma_spinlock_lock(&g_DeviceTrackingLock_CoreAudio);
     {
-        ma_uint32 iDevice;
-        for (iDevice = 0; iDevice < g_TrackedDeviceCount_CoreAudio; iDevice += 1) {
-            ma_device* pDevice;
-            ma_device_state_coreaudio* pDeviceStateCoreAudio;
-
-            pDevice = g_ppTrackedDevices_CoreAudio[iDevice];
-            pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
+        ma_device_state_coreaudio* pDeviceStateCoreAudio;
+        for (pDeviceStateCoreAudio = g_pTrackedDevices_CoreAudio; pDeviceStateCoreAudio != NULL; pDeviceStateCoreAudio = pDeviceStateCoreAudio->pNextTrackedDevice) {
+            ma_device* pDevice = pDeviceStateCoreAudio->pTrackedDevice;
 
             if (ma_device_get_type(pDevice) == deviceType || ma_device_get_type(pDevice) == ma_device_type_duplex) {
+                /* Default-device changes only apply to directions which follow the system default. */
+                if ((deviceType == ma_device_type_playback && !pDeviceStateCoreAudio->isDefaultPlaybackDevice) ||
+                    (deviceType == ma_device_type_capture  && !pDeviceStateCoreAudio->isDefaultCaptureDevice)) {
+                    continue;
+                }
+
                 if (deviceType == ma_device_type_playback) {
                     ma_atomic_bool32_set(&pDeviceStateCoreAudio->isSwitchingPlaybackDevice, MA_TRUE);
                 } else {
@@ -38916,7 +39018,7 @@ static OSStatus ma_default_device_changed__coreaudio(AudioObjectID objectID, UIn
             }
         }
     }
-    ma_mutex_unlock(&g_DeviceTrackingMutex_CoreAudio);
+    ma_spinlock_unlock(&g_DeviceTrackingLock_CoreAudio);
 
     /* Unused parameters. */
     (void)objectID;
@@ -38925,97 +39027,133 @@ static OSStatus ma_default_device_changed__coreaudio(AudioObjectID objectID, UIn
     return noErr;
 }
 
+/* Called with the init lock held and no contexts using the listeners. */
+static OSStatus ma_context__add_device_tracking_listener__coreaudio(ma_context_state_coreaudio* pContextStateCoreAudio, const AudioObjectPropertyAddress* pAddress)
+{
+    OSStatus status;
+    
+    status = pContextStateCoreAudio->AudioObjectAddPropertyListener(kAudioObjectSystemObject, pAddress, &ma_default_device_changed__coreaudio, NULL);
+    if (status != noErr) {
+        /* An earlier failed removal may have left this listener registered. Remove it and retry once. */
+        if (pContextStateCoreAudio->AudioObjectRemovePropertyListener(kAudioObjectSystemObject, pAddress, &ma_default_device_changed__coreaudio, NULL) == noErr) {
+            status = pContextStateCoreAudio->AudioObjectAddPropertyListener(kAudioObjectSystemObject, pAddress, &ma_default_device_changed__coreaudio, NULL);
+        }
+    }
+
+    return status;
+}
+
 static ma_result ma_context__init_device_tracking__coreaudio(ma_context* pContext, ma_context_state_coreaudio* pContextStateCoreAudio)
 {
-    (void)pContext;
+    ma_result result = MA_SUCCESS;
 
     ma_spinlock_lock(&g_DeviceTrackingInitLock_CoreAudio);
     {
         /* Don't do anything if we've already initialized device tracking. */
         if (g_DeviceTrackingInitCounter_CoreAudio == 0) {
             AudioObjectPropertyAddress propAddress;
+            OSStatus status;
+
             propAddress.mScope    = kAudioObjectPropertyScopeGlobal;
             propAddress.mElement  = AUDIO_OBJECT_PROPERTY_ELEMENT;
-
-            ma_mutex_init(&g_DeviceTrackingMutex_CoreAudio);
-
+            
             propAddress.mSelector = kAudioHardwarePropertyDefaultInputDevice;
-            pContextStateCoreAudio->AudioObjectAddPropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL);
+            status = ma_context__add_device_tracking_listener__coreaudio(pContextStateCoreAudio, &propAddress);
+            if (status != noErr) {
+                result = ma_result_from_OSStatus(status);
+                goto done;
+            }
 
             propAddress.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
-            pContextStateCoreAudio->AudioObjectAddPropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL);
+            status = ma_context__add_device_tracking_listener__coreaudio(pContextStateCoreAudio, &propAddress);
+            if (status != noErr) {
+                result = ma_result_from_OSStatus(status);
+
+                propAddress.mSelector = kAudioHardwarePropertyDefaultInputDevice;
+                if (pContextStateCoreAudio->AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL) != noErr) {
+                    ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_WARNING, "Failed to remove Core Audio default input device listener after initialization failed.");
+                }
+
+                goto done;
+            }
         }
+
         g_DeviceTrackingInitCounter_CoreAudio += 1;
     }
+done:
     ma_spinlock_unlock(&g_DeviceTrackingInitLock_CoreAudio);
 
-    return MA_SUCCESS;
+    return result;
 }
 
 static ma_result ma_context__uninit_device_tracking__coreaudio(ma_context* pContext, ma_context_state_coreaudio* pContextStateCoreAudio)
 {
+    ma_result result = MA_SUCCESS;
+
     ma_spinlock_lock(&g_DeviceTrackingInitLock_CoreAudio);
     {
-        if (g_DeviceTrackingInitCounter_CoreAudio > 0) {
-            g_DeviceTrackingInitCounter_CoreAudio -= 1;
+        if (g_DeviceTrackingInitCounter_CoreAudio == 0) {
+            goto done;
         }
+
+        if (g_DeviceTrackingInitCounter_CoreAudio == 1) {
+            ma_bool32 hasTrackedDevices;
+
+            ma_spinlock_lock(&g_DeviceTrackingLock_CoreAudio);
+            {
+                hasTrackedDevices = (g_pTrackedDevices_CoreAudio != NULL);
+            }
+            ma_spinlock_unlock(&g_DeviceTrackingLock_CoreAudio);
+
+            if (hasTrackedDevices) {
+                ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_WARNING, "You have uninitialized all contexts while an associated device is still active.");
+                result = MA_INVALID_OPERATION;
+                goto done;
+            }
+        }
+
+        g_DeviceTrackingInitCounter_CoreAudio -= 1;
 
         if (g_DeviceTrackingInitCounter_CoreAudio == 0) {
             AudioObjectPropertyAddress propAddress;
+            OSStatus status;
+
             propAddress.mScope    = kAudioObjectPropertyScopeGlobal;
             propAddress.mElement  = AUDIO_OBJECT_PROPERTY_ELEMENT;
 
             propAddress.mSelector = kAudioHardwarePropertyDefaultInputDevice;
-            pContextStateCoreAudio->AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL);
-
-            propAddress.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
-            pContextStateCoreAudio->AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL);
-
-            /* At this point there should be no tracked devices. If not there's an error somewhere. */
-            if (g_ppTrackedDevices_CoreAudio != NULL) {
-                ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_WARNING, "You have uninitialized all contexts while an associated device is still active.");
-                ma_spinlock_unlock(&g_DeviceTrackingInitLock_CoreAudio);
-                return MA_INVALID_OPERATION;
+            status = pContextStateCoreAudio->AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL);
+            if (status != noErr) {
+                result = ma_result_from_OSStatus(status);
             }
 
-            ma_mutex_uninit(&g_DeviceTrackingMutex_CoreAudio);
+            propAddress.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
+            status = pContextStateCoreAudio->AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &propAddress, &ma_default_device_changed__coreaudio, NULL);
+            if (status != noErr && result == MA_SUCCESS) {
+                result = ma_result_from_OSStatus(status);
+            }
         }
     }
+done:
     ma_spinlock_unlock(&g_DeviceTrackingInitLock_CoreAudio);
 
-    return MA_SUCCESS;
+    return result;
 }
 
-static ma_result ma_device__track__coreaudio(ma_device* pDevice)
+static ma_result ma_device__track__coreaudio(ma_device* pDevice, ma_device_state_coreaudio* pState)
 {
     MA_ASSERT(pDevice != NULL);
 
-    ma_mutex_lock(&g_DeviceTrackingMutex_CoreAudio);
+    ma_spinlock_lock(&g_DeviceTrackingLock_CoreAudio);
     {
-        /* Allocate memory if required. */
-        if (g_TrackedDeviceCap_CoreAudio <= g_TrackedDeviceCount_CoreAudio) {
-            ma_uint32 newCap;
-            ma_device** ppNewDevices;
+        MA_ASSERT(pState->pTrackedDevice == NULL);
 
-            newCap = g_TrackedDeviceCap_CoreAudio * 2;
-            if (newCap == 0) {
-                newCap = 1;
-            }
+        pState->pTrackedDevice     = pDevice;
+        pState->pNextTrackedDevice = g_pTrackedDevices_CoreAudio;
 
-            ppNewDevices = (ma_device**)ma_realloc(g_ppTrackedDevices_CoreAudio, sizeof(*g_ppTrackedDevices_CoreAudio)*newCap, ma_device_get_allocation_callbacks(pDevice));
-            if (ppNewDevices == NULL) {
-                ma_mutex_unlock(&g_DeviceTrackingMutex_CoreAudio);
-                return MA_OUT_OF_MEMORY;
-            }
-
-            g_ppTrackedDevices_CoreAudio = ppNewDevices;
-            g_TrackedDeviceCap_CoreAudio = newCap;
-        }
-
-        g_ppTrackedDevices_CoreAudio[g_TrackedDeviceCount_CoreAudio] = pDevice;
-        g_TrackedDeviceCount_CoreAudio += 1;
+        g_pTrackedDevices_CoreAudio = pState;
     }
-    ma_mutex_unlock(&g_DeviceTrackingMutex_CoreAudio);
+    ma_spinlock_unlock(&g_DeviceTrackingLock_CoreAudio);
 
     return MA_SUCCESS;
 }
@@ -39024,31 +39162,23 @@ static ma_result ma_device__untrack__coreaudio(ma_device* pDevice)
 {
     MA_ASSERT(pDevice != NULL);
 
-    ma_mutex_lock(&g_DeviceTrackingMutex_CoreAudio);
+    ma_spinlock_lock(&g_DeviceTrackingLock_CoreAudio);
     {
-        ma_uint32 iDevice;
-        for (iDevice = 0; iDevice < g_TrackedDeviceCount_CoreAudio; iDevice += 1) {
-            if (g_ppTrackedDevices_CoreAudio[iDevice] == pDevice) {
-                /* We've found the device. We now need to remove it from the list. */
-                ma_uint32 jDevice;
-                for (jDevice = iDevice; jDevice < g_TrackedDeviceCount_CoreAudio-1; jDevice += 1) {
-                    g_ppTrackedDevices_CoreAudio[jDevice] = g_ppTrackedDevices_CoreAudio[jDevice+1];
-                }
-
-                g_TrackedDeviceCount_CoreAudio -= 1;
-
-                /* If there's nothing else in the list we need to free memory. */
-                if (g_TrackedDeviceCount_CoreAudio == 0) {
-                    ma_free(g_ppTrackedDevices_CoreAudio, ma_device_get_allocation_callbacks(pDevice));
-                    g_ppTrackedDevices_CoreAudio = NULL;
-                    g_TrackedDeviceCap_CoreAudio = 0;
-                }
-
+        ma_device_state_coreaudio** ppNext = &g_pTrackedDevices_CoreAudio;
+        while (*ppNext != NULL) {
+            ma_device_state_coreaudio* pState = *ppNext;
+            
+            if (pState->pTrackedDevice == pDevice) {
+                *ppNext = pState->pNextTrackedDevice;
+                pState->pTrackedDevice = NULL;
+                pState->pNextTrackedDevice = NULL;
                 break;
             }
+
+            ppNext = &pState->pNextTrackedDevice;
         }
     }
-    ma_mutex_unlock(&g_DeviceTrackingMutex_CoreAudio);
+    ma_spinlock_unlock(&g_DeviceTrackingLock_CoreAudio);
 
     return MA_SUCCESS;
 }
@@ -39061,11 +39191,10 @@ static void ma_backend_info__coreaudio(ma_device_backend_info* pBackendInfo)
     pBackendInfo->pName = "Core Audio";
 }
 
-#if defined(MA_APPLE_MOBILE) && defined(__IPHONE_12_0)
-static AVAudioSessionCategory ma_to_AVAudioSessionCategory(ma_ios_session_category category)
+#if defined(MA_APPLE_MOBILE)
+static NSString* ma_to_AVAudioSessionCategory(ma_ios_session_category category)
 {
-    /* The "default" and "none" categories are treated different and should not be used as an input into this function. */
-    MA_ASSERT(category != ma_ios_session_category_default);
+    /* The "none" category leaves the session unchanged and must not be converted. */
     MA_ASSERT(category != ma_ios_session_category_none);
 
     switch (category) {
@@ -39076,7 +39205,7 @@ static AVAudioSessionCategory ma_to_AVAudioSessionCategory(ma_ios_session_catego
         case ma_ios_session_category_play_and_record: return AVAudioSessionCategoryPlayAndRecord;
         case ma_ios_session_category_multi_route:     return AVAudioSessionCategoryMultiRoute;
         case ma_ios_session_category_none:            return AVAudioSessionCategoryAmbient;
-        case ma_ios_session_category_default:         return AVAudioSessionCategoryAmbient;
+        case ma_ios_session_category_default:         return AVAudioSessionCategoryPlayback;
         default:                                      return AVAudioSessionCategoryAmbient;
     }
 }
@@ -39087,6 +39216,8 @@ static ma_result ma_context_init__coreaudio(ma_context* pContext, const void* pC
     ma_context_state_coreaudio* pContextStateCoreAudio;
     const ma_context_config_coreaudio* pContextConfigCoreAudio = (const ma_context_config_coreaudio*)pContextBackendConfig;
     ma_context_config_coreaudio defaultConfigCoreAudio;
+
+    *ppContextState = NULL;
     
     if (pContextConfigCoreAudio == NULL) {
         defaultConfigCoreAudio  = ma_context_config_coreaudio_init();
@@ -39106,35 +39237,11 @@ static ma_result ma_context_init__coreaudio(ma_context* pContext, const void* pC
 
             MA_ASSERT(pAudioSession != NULL);
 
-            if (pContextConfigCoreAudio->sessionCategory == ma_ios_session_category_default) {
-                /*
-                I'm going to use trial and error to determine our default session category. First we'll try PlayAndRecord. If that fails
-                we'll try Playback and if that fails we'll try record. If all of these fail we'll just not set the category.
-                */
-            #if !defined(MA_APPLE_TV) && !defined(MA_APPLE_WATCH)
-                options |= AVAudioSessionCategoryOptionDefaultToSpeaker;
-            #endif
-
-                if ([pAudioSession setCategory: AVAudioSessionCategoryPlayAndRecord withOptions:options error:nil]) {
-                    /* Using PlayAndRecord */
-                } else if ([pAudioSession setCategory: AVAudioSessionCategoryPlayback withOptions:options error:nil]) {
-                    /* Using Playback */
-                } else if ([pAudioSession setCategory: AVAudioSessionCategoryRecord withOptions:options error:nil]) {
-                    /* Using Record */
-                } else {
-                    /* Leave as default? */
-                }
-            } else {
-                if (pContextConfigCoreAudio->sessionCategory != ma_ios_session_category_none) {
-                #if defined(__IPHONE_12_0)
-                    if (![pAudioSession setCategory: ma_to_AVAudioSessionCategory(pContextConfigCoreAudio->sessionCategory) withOptions:options error:nil]) {
-                        ma_free(pContextStateCoreAudio, ma_context_get_allocation_callbacks(pContext));
-                        return MA_INVALID_OPERATION;    /* Failed to set session category. */
-                    }
-                #else
-                    /* Ignore the session category on version 11 and older, but post a warning. */
-                    ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_WARNING, "Session category only supported in iOS 12 and newer.");
-                #endif
+            /* Session policy applies to all audio in the application, independent of device type. */
+            if (pContextConfigCoreAudio->sessionCategory != ma_ios_session_category_none) {
+                if (![pAudioSession setCategory: ma_to_AVAudioSessionCategory(pContextConfigCoreAudio->sessionCategory) withOptions:options error:nil]) {
+                    ma_free(pContextStateCoreAudio, ma_context_get_allocation_callbacks(pContext));
+                    return MA_INVALID_OPERATION;    /* Failed to set session category. */
                 }
             }
 
@@ -39153,6 +39260,7 @@ static ma_result ma_context_init__coreaudio(ma_context* pContext, const void* pC
     {
         pContextStateCoreAudio->hCoreFoundation = ma_dlopen(ma_context_get_log(pContext), "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
         if (pContextStateCoreAudio->hCoreFoundation == NULL) {
+            ma_free(pContextStateCoreAudio, ma_context_get_allocation_callbacks(pContext));
             return MA_API_NOT_FOUND;
         }
 
@@ -39278,6 +39386,7 @@ static ma_result ma_context_init__coreaudio(ma_context* pContext, const void* pC
     }
     #endif
 
+    pContextStateCoreAudio->noAudioSessionActivate   = pContextConfigCoreAudio->noAudioSessionActivate;
     pContextStateCoreAudio->noAudioSessionDeactivate = pContextConfigCoreAudio->noAudioSessionDeactivate;
 
     *ppContextState = pContextStateCoreAudio;
@@ -39297,14 +39406,16 @@ static void ma_context_uninit__coreaudio(ma_context* pContext)
     }
 #endif
 
+#if !defined(MA_APPLE_MOBILE)
+    if (ma_context__uninit_device_tracking__coreaudio(pContext, pContextStateCoreAudio) != MA_SUCCESS) {
+        ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_WARNING, "Failed to uninitialize Core Audio device tracking.");
+    }
+#endif
+
 #if !defined(MA_NO_RUNTIME_LINKING) && !defined(MA_APPLE_MOBILE)
     ma_dlclose(ma_context_get_log(pContext), pContextStateCoreAudio->hAudioUnit);
     ma_dlclose(ma_context_get_log(pContext), pContextStateCoreAudio->hCoreAudio);
     ma_dlclose(ma_context_get_log(pContext), pContextStateCoreAudio->hCoreFoundation);
-#endif
-
-#if !defined(MA_APPLE_MOBILE)
-    ma_context__uninit_device_tracking__coreaudio(pContext, pContextStateCoreAudio);
 #endif
 
     ma_free(pContextStateCoreAudio, ma_context_get_allocation_callbacks(pContext));
@@ -39410,6 +39521,7 @@ static ma_device_enumeration_result ma_context_enumerate_device_by_AudioObjectID
             /* Sample Rates */
             result = ma_get_AudioObject_sample_rates(pContext, deviceObjectID, deviceType, &sampleRateRangeCount, &pSampleRateRanges);
             if (result != MA_SUCCESS) {
+                ma_free(pStreamDescriptions, &pContext->allocationCallbacks);
                 return MA_DEVICE_ENUMERATION_CONTINUE;  /* Failed to retrieve sample rates. */
             }
 
@@ -39660,7 +39772,33 @@ static ma_result ma_device_realloc_AudioBufferList__coreaudio(ma_device* pDevice
 }
 
 
-static OSStatus ma_on_output__coreaudio(void* pUserData, AudioUnitRenderActionFlags* pActionFlags, const AudioTimeStamp* pTimeStamp, UInt32 busNumber, UInt32 frameCount, AudioBufferList* pBufferList)
+/* Each direction has one callback producer. Only that producer increases its requested capacity. */
+static void ma_device_request_buffer_size__coreaudio(ma_device_state_coreaudio* pState, ma_atomic_uint32* pRequestedFrameCap, ma_uint32 frameCount)
+{
+    if (frameCount > ma_atomic_uint32_get(pRequestedFrameCap)) {
+        ma_atomic_uint32_set(pRequestedFrameCap, frameCount);
+        ma_device_state_async_release(&pState->async);
+    }
+}
+
+static ma_bool32 ma_device_begin_callback__coreaudio(ma_device_state_coreaudio* pState, ma_spinlock* pLock)
+{
+    ma_uint32 expected = 0;
+
+    /* Render callbacks must not wait for the worker to allocate or reconfigure buffers. */
+    if (ma_atomic_bool32_get(&pState->isCallbackProcessingBlocked) || !ma_atomic_compare_exchange_strong_32(pLock, &expected, 1)) {
+        return MA_FALSE;
+    }
+
+    if (ma_atomic_bool32_get(&pState->isCallbackProcessingBlocked)) {
+        ma_spinlock_unlock(pLock);
+        return MA_FALSE;
+    }
+
+    return MA_TRUE;
+}
+
+static OSStatus ma_on_output_internal__coreaudio(void* pUserData, AudioUnitRenderActionFlags* pActionFlags, const AudioTimeStamp* pTimeStamp, UInt32 busNumber, UInt32 frameCount, AudioBufferList* pBufferList)
 {
     ma_device* pDevice = (ma_device*)pUserData;
     ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
@@ -39677,9 +39815,8 @@ static OSStatus ma_on_output__coreaudio(void* pUserData, AudioUnitRenderActionFl
     }
 
     /*
-    I've observed with iOS that the callback can be fired with inconsistent frame counts, differing from the
-    reported period size which is what our internal buffer would have been initially sized with. We need to
-    check what's reported and then resize the buffer as necessary.
+    The callback size can differ from the reported period size. Request growth on the device worker;
+    until then, async_process() copies the available frames and silences any shortfall.
     */
     {
         ma_uint32 totalFrameCount = 0;
@@ -39700,9 +39837,7 @@ static OSStatus ma_on_output__coreaudio(void* pUserData, AudioUnitRenderActionFl
 
         /*ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "INTERLEAVED: totalFrameCount=%d", (int)totalFrameCount);*/
 
-        if (pDeviceStateCoreAudio->async.playback.frameCap < totalFrameCount) {
-            ma_device_state_async_resize(&pDeviceStateCoreAudio->async, totalFrameCount, pDeviceStateCoreAudio->async.capture.frameCap, ma_device_get_allocation_callbacks(pDevice));
-        }
+        ma_device_request_buffer_size__coreaudio(pDeviceStateCoreAudio, &pDeviceStateCoreAudio->requestedPlaybackFrameCap, totalFrameCount);
     }
 
     if (layout == ma_stream_layout_interleaved) {
@@ -39776,13 +39911,12 @@ static OSStatus ma_on_output__coreaudio(void* pUserData, AudioUnitRenderActionFl
     return noErr;
 }
 
-static OSStatus ma_on_input__coreaudio(void* pUserData, AudioUnitRenderActionFlags* pActionFlags, const AudioTimeStamp* pTimeStamp, UInt32 busNumber, UInt32 frameCount, AudioBufferList* pUnusedBufferList)
+static OSStatus ma_on_input_internal__coreaudio(void* pUserData, AudioUnitRenderActionFlags* pActionFlags, const AudioTimeStamp* pTimeStamp, UInt32 busNumber, UInt32 frameCount, AudioBufferList* pUnusedBufferList)
 {
     ma_device* pDevice = (ma_device*)pUserData;
     ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
     ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
     AudioBufferList* pRenderedBufferList;
-    ma_result result;
     ma_stream_layout layout;
     ma_uint32 iBuffer;
     OSStatus status;
@@ -39800,21 +39934,11 @@ static OSStatus ma_on_input__coreaudio(void* pUserData, AudioUnitRenderActionFla
 
     /*ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "INFO: Input Callback: busNumber=%d, frameCount=%d, mNumberBuffers=%d", (int)busNumber, (int)frameCount, (int)pRenderedBufferList->mNumberBuffers);*/
 
-    /*
-    There has been a situation reported where frame count passed into this function is greater than the capacity of
-    our capture buffer. There doesn't seem to be a reliable way to determine what the maximum frame count will be,
-    so we need to instead resort to dynamically reallocating our buffer to ensure it's large enough to capture the
-    number of frames requested by this callback.
-    */
-    result = ma_device_realloc_AudioBufferList__coreaudio(pDevice, frameCount, pDevice->capture.internalFormat, pDevice->capture.internalChannels, layout);
-    if (result != MA_SUCCESS) {
-        ma_device_state_async_release(&pDeviceStateCoreAudio->async);
-        ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "Failed to allocate AudioBufferList for capture.");
+    /* The worker grows both capture buffers. Skip this block rather than allocate on the render thread. */
+    ma_device_request_buffer_size__coreaudio(pDeviceStateCoreAudio, &pDeviceStateCoreAudio->requestedCaptureFrameCap, frameCount);
+    if (frameCount > pDeviceStateCoreAudio->audioBufferCapInFrames) {
         return noErr;
     }
-
-    pRenderedBufferList = (AudioBufferList*)pDeviceStateCoreAudio->pAudioBufferList;
-    MA_ASSERT(pRenderedBufferList);
 
     /*
     When you call AudioUnitRender(), Core Audio tries to be helpful by setting the mDataByteSize to the number of bytes
@@ -39836,31 +39960,6 @@ static OSStatus ma_on_input__coreaudio(void* pUserData, AudioUnitRenderActionFla
         ma_device_state_async_release(&pDeviceStateCoreAudio->async);
         ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "ERROR: AudioUnitRender() failed with %d. Attempting reroute.", (int)status);
         return status;
-    }
-
-    /* Like with playback we need to make sure our internal buffer is big enough for what's reported by Core Audio. */
-    {
-        ma_uint32 totalFrameCount = 0;
-
-        if (layout == ma_stream_layout_interleaved) {
-            UInt32 iBuffer;
-            for (iBuffer = 0; iBuffer < pRenderedBufferList->mNumberBuffers; ++iBuffer) {
-                totalFrameCount += frameCount;
-            }  
-        } else {
-            if ((pRenderedBufferList->mNumberBuffers % pDevice->capture.internalChannels) == 0) {
-                UInt32 iBuffer;
-                for (iBuffer = 0; iBuffer < pRenderedBufferList->mNumberBuffers; iBuffer += pDevice->capture.internalChannels) {
-                    totalFrameCount += frameCount;
-                }
-            }
-        }
-
-        /*ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "INTERLEAVED: totalFrameCount=%d", (int)totalFrameCount);*/
-
-        if (pDeviceStateCoreAudio->async.capture.frameCap < totalFrameCount) {
-            ma_device_state_async_resize(&pDeviceStateCoreAudio->async, pDeviceStateCoreAudio->async.playback.frameCap, totalFrameCount, ma_device_get_allocation_callbacks(pDevice));
-        }
     }
 
     if (layout == ma_stream_layout_interleaved) {
@@ -39939,88 +40038,208 @@ static OSStatus ma_on_input__coreaudio(void* pUserData, AudioUnitRenderActionFla
     return noErr;
 }
 
-static void ma_on_start_stop__coreaudio(void* pUserData, AudioUnit audioUnit, AudioUnitPropertyID propertyID, AudioUnitScope scope, AudioUnitElement element)
+static OSStatus ma_on_output__coreaudio(void* pUserData, AudioUnitRenderActionFlags* pActionFlags, const AudioTimeStamp* pTimeStamp, UInt32 busNumber, UInt32 frameCount, AudioBufferList* pBufferList)
 {
-    ma_device* pDevice = (ma_device*)pUserData;
-    ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
-    ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
+    ma_device_state_coreaudio* pState = ma_device_get_backend_state__coreaudio((ma_device*)pUserData);
+    OSStatus status;
 
-    MA_ASSERT(pDevice != NULL);
-
-    /* Don't do anything if it looks like we're just reinitializing due to a device switch. */
-    if (((audioUnit == pDeviceStateCoreAudio->audioUnitPlayback) && ma_atomic_bool32_get(&pDeviceStateCoreAudio->isSwitchingPlaybackDevice)) ||
-        ((audioUnit == pDeviceStateCoreAudio->audioUnitCapture)  && ma_atomic_bool32_get(&pDeviceStateCoreAudio->isSwitchingCaptureDevice))) {
-        return;
+    if (!ma_device_begin_callback__coreaudio(pState, &pState->playbackCallbackLock)) {
+        UInt32 iBuffer;
+        for (iBuffer = 0; iBuffer < pBufferList->mNumberBuffers; iBuffer += 1) {
+            MA_ZERO_MEMORY(pBufferList->mBuffers[iBuffer].mData, pBufferList->mBuffers[iBuffer].mDataByteSize);
+        }
+        return noErr;
     }
 
-    /*
-    There's been a report of a deadlock here when triggered by ma_device_uninit(). It looks like
-    AudioUnitGetProprty (called below) and AudioComponentInstanceDispose (called in ma_device_uninit)
-    can try waiting on the same lock. I'm going to try working around this by not calling any Core
-    Audio APIs in the callback when the device has been stopped or uninitialized.
-    */
-    if (ma_device_get_status(pDevice) == ma_device_status_uninitialized || ma_device_get_status(pDevice) == ma_device_status_stopping || ma_device_get_status(pDevice) == ma_device_status_stopped) {
-        /* Device not started. Do nothing. See note just above ^. */
-    } else {
-        UInt32 isRunning;
-        UInt32 isRunningSize = sizeof(isRunning);
-        OSStatus status = pContextStateCoreAudio->AudioUnitGetProperty(audioUnit, kAudioOutputUnitProperty_IsRunning, scope, element, &isRunning, &isRunningSize);
-        if (status != noErr) {
-            goto done; /* Don't really know what to do in this case... just ignore it, I suppose... */
-        }
+    status = ma_on_output_internal__coreaudio(pUserData, pActionFlags, pTimeStamp, busNumber, frameCount, pBufferList);
+    ma_spinlock_unlock(&pState->playbackCallbackLock);
+    return status;
+}
 
-        if (!isRunning) {
-            /*
-            The stop event is a bit annoying in Core Audio because it will be called when we automatically switch the default device. Some scenarios to consider:
+static OSStatus ma_on_input__coreaudio(void* pUserData, AudioUnitRenderActionFlags* pActionFlags, const AudioTimeStamp* pTimeStamp, UInt32 busNumber, UInt32 frameCount, AudioBufferList* pUnusedBufferList)
+{
+    ma_device_state_coreaudio* pState = ma_device_get_backend_state__coreaudio((ma_device*)pUserData);
+    OSStatus status;
 
-            1) When the device is unplugged, this will be called _before_ the default device change notification.
-            2) When the device is changed via the default device change notification, this will be called _after_ the switch.
+    if (!ma_device_begin_callback__coreaudio(pState, &pState->captureCallbackLock)) {
+        return noErr;
+    }
 
-            For case #1, we just check if there's a new default device available. If so, we just ignore the stop event. For case #2 we check a flag.
-            */
-            if (((audioUnit == pDeviceStateCoreAudio->audioUnitPlayback) && pDeviceStateCoreAudio->isDefaultPlaybackDevice) ||
-                ((audioUnit == pDeviceStateCoreAudio->audioUnitCapture)  && pDeviceStateCoreAudio->isDefaultCaptureDevice)) {
-                /*
-                It looks like the device is switching through an external event, such as the user unplugging the device or changing the default device
-                via the operating system's sound settings. If we're re-initializing the device, we just terminate because we want the stopping of the
-                device to be seamless to the client (we don't want them receiving the stopped event and thinking that the device has stopped when it
-                hasn't!).
-                */
-                if (((audioUnit == pDeviceStateCoreAudio->audioUnitPlayback) && ma_atomic_bool32_get(&pDeviceStateCoreAudio->isSwitchingPlaybackDevice)) ||
-                    ((audioUnit == pDeviceStateCoreAudio->audioUnitCapture)  && ma_atomic_bool32_get(&pDeviceStateCoreAudio->isSwitchingCaptureDevice))) {
-                    goto done;
-                }
+    status = ma_on_input_internal__coreaudio(pUserData, pActionFlags, pTimeStamp, busNumber, frameCount, pUnusedBufferList);
+    ma_spinlock_unlock(&pState->captureCallbackLock);
+    return status;
+}
 
-                /*
-                Getting here means the device is not reinitializing which means it may have been unplugged. From what I can see, it looks like Core Audio
-                will try switching to the new default device seamlessly. We need to somehow find a way to determine whether or not Core Audio will most
-                likely be successful in switching to the new device.
+#if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+static ma_bool32 ma_device_begin_interruption_nolock__coreaudio(ma_device_state_coreaudio* pState)
+{
+    if (pState->isInterrupted) {
+        return MA_FALSE;
+    }
 
-                TODO: Try to predict if Core Audio will switch devices. If not, the stopped callback needs to be posted.
-                */
-                goto done;
+    pState->isInterrupted = MA_TRUE;
+    pState->isInterruptionRecoveryPending = MA_TRUE;
+    pState->canResumeAfterInterruption = MA_FALSE;
+    pState->interruptionGeneration += 1;
+    ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, MA_TRUE);
+
+    return MA_TRUE;
+}
+
+static ma_bool32 ma_device_begin_interruption__coreaudio(ma_device_state_coreaudio* pState)
+{
+    ma_bool32 result;
+
+    ma_spinlock_lock(&pState->interruptionLock);
+    {
+        result = ma_device_begin_interruption_nolock__coreaudio(pState);
+    }
+    ma_spinlock_unlock(&pState->interruptionLock);
+
+    if (result) {
+        ma_device_state_async_release(&pState->async);
+    }
+
+    return result;
+}
+
+static ma_bool32 ma_device_end_interruption_nolock__coreaudio(ma_device_state_coreaudio* pState, ma_bool32 canResume)
+{
+    if (!pState->isInterrupted) {
+        return MA_FALSE;
+    }
+
+    pState->isInterrupted = MA_FALSE;
+    pState->isInterruptionRecoveryPending = MA_TRUE;
+    pState->canResumeAfterInterruption = canResume;
+    pState->interruptionGeneration += 1;
+
+    return MA_TRUE;
+}
+
+static ma_bool32 ma_device_end_interruption__coreaudio(ma_device* pDevice, ma_device_state_coreaudio* pState, ma_bool32 shouldResume)
+{
+    ma_context_state_coreaudio* pContextState;
+    ma_bool32 result;
+
+    pContextState = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
+
+    ma_spinlock_lock(&pState->interruptionLock);
+    {
+        result = ma_device_end_interruption_nolock__coreaudio(pState, shouldResume && !pContextState->noAudioSessionActivate);
+    }
+    ma_spinlock_unlock(&pState->interruptionLock);
+
+    if (result) {
+        ma_device_state_async_release(&pState->async);
+    }
+
+    return result;
+}
+
+static ma_result ma_device_prepare_start_nolock__coreaudio(ma_device_state_coreaudio* pState, ma_bool32 isInterruptionRecovery, ma_uint32* pInterruptionGeneration)
+{
+    if (pState->isInterrupted) {
+        return MA_NO_DATA_AVAILABLE;
+    }
+
+    if (isInterruptionRecovery && !pState->canResumeAfterInterruption) {
+        pState->isInterruptionRecoveryPending = MA_FALSE;
+        return MA_DEVICE_NOT_STARTED;
+    }
+
+    *pInterruptionGeneration = pState->interruptionGeneration;
+    pState->isInterruptionRecoveryPending = MA_FALSE;
+
+    return MA_SUCCESS;
+}
+
+static ma_bool32 ma_device_validate_start_nolock__coreaudio(ma_device_state_coreaudio* pState, ma_uint32 interruptionGeneration, ma_bool32 enableCallbacks)
+{
+    if (interruptionGeneration != pState->interruptionGeneration) {
+        ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, MA_TRUE);
+        return MA_FALSE;
+    }
+
+    if (enableCallbacks) {
+        ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, MA_FALSE);
+    }
+
+    return MA_TRUE;
+}
+
+static ma_bool32 ma_device_validate_start__coreaudio(ma_device_state_coreaudio* pState, ma_uint32 interruptionGeneration, ma_bool32 enableCallbacks)
+{
+    ma_bool32 result;
+
+    ma_spinlock_lock(&pState->interruptionLock);
+    {
+        result = ma_device_validate_start_nolock__coreaudio(pState, interruptionGeneration, enableCallbacks);
+    }
+    ma_spinlock_unlock(&pState->interruptionLock);
+
+    return result;
+}
+
+static ma_bool32 ma_device_needs_interruption_recovery_nolock__coreaudio(ma_device_state_coreaudio* pState)
+{
+    return pState->isInterrupted || pState->isInterruptionRecoveryPending;
+}
+
+static ma_bool32 ma_device_needs_interruption_recovery__coreaudio(ma_device_state_coreaudio* pState)
+{
+    ma_bool32 result;
+
+    ma_spinlock_lock(&pState->interruptionLock);
+    {
+        result = ma_device_needs_interruption_recovery_nolock__coreaudio(pState);
+    }
+    ma_spinlock_unlock(&pState->interruptionLock);
+
+    return result;
+}
+
+static void ma_device_restore_callback_gate_nolock__coreaudio(ma_device_state_coreaudio* pState)
+{
+    ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, pState->areAudioUnitsStopped || ma_device_needs_interruption_recovery_nolock__coreaudio(pState));
+}
+
+static ma_result ma_device_activate_audio_session__coreaudio(ma_device* pDevice)
+{
+    ma_context_state_coreaudio* pContextState = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
+
+    if (!pContextState->noAudioSessionActivate) {
+        @autoreleasepool {
+            NSError* pError = nil;
+
+            if (![[AVAudioSession sharedInstance] setActive:true error:&pError]) {
+                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[Core Audio] Failed to activate audio session: %s", [[pError localizedDescription] UTF8String]);
+                return MA_DEVICE_NOT_STARTED;
             }
         }
     }
 
-    (void)propertyID; /* Unused. */
-
-done:
-    /* Always signal the stop event. It's possible for the "else" case to get hit which can happen during an interruption. */
-    ma_event_signal(&pDeviceStateCoreAudio->stopEvent);
+    return MA_SUCCESS;
 }
+#endif
 
 #if defined(MA_APPLE_MOBILE)
 @interface ma_ios_notification_handler:NSObject {
     ma_device* m_pDevice;
+    ma_device_state_coreaudio* m_pDeviceState;
 }
 @end
 
 @implementation ma_ios_notification_handler
--(id)init:(ma_device*)pDevice
+-(id)init:(ma_device*)pDevice state:(ma_device_state_coreaudio*)pState
 {
     self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+
     m_pDevice = pDevice;
+    m_pDeviceState = pState;
 
     /* For route changes. */
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handle_route_change:) name:AVAudioSessionRouteChangeNotification object:[AVAudioSession sharedInstance]];
@@ -40057,23 +40276,22 @@ done:
         {
             ma_log_postf(ma_device_get_log(m_pDevice), MA_LOG_LEVEL_INFO, "[Core Audio] Interruption: AVAudioSessionInterruptionTypeBegan");
 
-            /*
-            Core Audio will have stopped the internal device automatically, but we need explicitly
-            stop it at a higher level to ensure miniaudio-specific state is updated for consistency.
-            */
-            ma_device_stop(m_pDevice);
-
-            /*
-            Fire the notification after the device has been stopped to ensure it's in the correct
-            state when the notification handler is invoked.
-            */
-            ma_device_post_notification_interruption_began(m_pDevice);
+            /* Preserve the application's running intent. The worker suspends the native audio units. */
+            if (ma_device_begin_interruption__coreaudio(m_pDeviceState)) {
+                ma_device_post_notification_interruption_began(m_pDevice);
+            }
         } break;
 
         case AVAudioSessionInterruptionTypeEnded:
         {
+            AVAudioSessionInterruptionOptions options;
+
+            options = [[[pNotification userInfo] objectForKey:AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+
             ma_log_postf(ma_device_get_log(m_pDevice), MA_LOG_LEVEL_INFO, "[Core Audio] Interruption: AVAudioSessionInterruptionTypeEnded");
-            ma_device_post_notification_interruption_ended(m_pDevice);
+            if (ma_device_end_interruption__coreaudio(m_pDevice, m_pDeviceState, (options & AVAudioSessionInterruptionOptionShouldResume) != 0)) {
+                ma_device_post_notification_interruption_ended(m_pDevice);
+            }
         } break;
     }
 }
@@ -40182,7 +40400,6 @@ typedef struct
     ma_uint32 periodSizeInMillisecondsIn;
     ma_uint32 periodsIn;
     ma_share_mode shareMode;
-    ma_bool32 registerStopEvent;
 
     /* Output. */
 #if defined(MA_APPLE_DESKTOP)
@@ -40199,6 +40416,20 @@ typedef struct
     ma_uint32 periodsOut;
     char deviceName[256];
 } ma_device_init_internal_data__coreaudio;
+
+/* Release only the resources owned by this candidate or retired unit. The device state has a separate lifetime. */
+static void ma_device_uninit_internal__coreaudio(ma_context* pContext, AudioUnit* pAudioUnit, AudioBufferList** ppAudioBufferList)
+{
+    ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(pContext);
+
+    if (*pAudioUnit != NULL) {
+        pContextStateCoreAudio->AudioComponentInstanceDispose(*pAudioUnit);
+        *pAudioUnit = NULL;
+    }
+
+    ma_free(*ppAudioBufferList, ma_context_get_allocation_callbacks(pContext));
+    *ppAudioBufferList = NULL;
+}
 
 static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_device_type deviceType, const ma_device_id* pDeviceID, ma_device_init_internal_data__coreaudio* pData, void* pDevice_DoNotReference)   /* <-- pDevice is typed as void* intentionally so as to avoid accidentally referencing it. */
 {
@@ -40262,15 +40493,15 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
 
     status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, MA_COREAUDIO_OUTPUT_BUS, &enableIOFlag, sizeof(enableIOFlag));
     if (status != noErr) {
-        pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-        return ma_result_from_OSStatus(status);
+        result = ma_result_from_OSStatus(status);
+        goto on_error;
     }
 
     enableIOFlag = (enableIOFlag == 0) ? 1 : 0;
     status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, MA_COREAUDIO_INPUT_BUS, &enableIOFlag, sizeof(enableIOFlag));
     if (status != noErr) {
-        pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-        return ma_result_from_OSStatus(status);
+        result = ma_result_from_OSStatus(status);
+        goto on_error;
     }
 
 
@@ -40278,8 +40509,8 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
 #if defined(MA_APPLE_DESKTOP)
     status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &deviceObjectID, sizeof(deviceObjectID));
     if (status != noErr) {
-        pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-        return ma_result_from_OSStatus(result);
+        result = ma_result_from_OSStatus(status);
+        goto on_error;
     }
 #else
     /*
@@ -40299,7 +40530,8 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
             }
 
             if (found == MA_FALSE) {
-                return MA_DOES_NOT_EXIST;
+                result = MA_DOES_NOT_EXIST;
+                goto on_error;
             }
         }
     }
@@ -40329,15 +40561,27 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
             status = pContextStateCoreAudio->AudioUnitGetProperty(pData->audioUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, MA_COREAUDIO_INPUT_BUS, &origFormat, &origFormatSize);
         }
         if (status != noErr) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return ma_result_from_OSStatus(status);
+            result = ma_result_from_OSStatus(status);
+            goto on_error;
         }
 
     #if defined(MA_APPLE_DESKTOP)
         result = ma_find_best_format__coreaudio(pContext, deviceObjectID, deviceType, pData->formatIn, pData->channelsIn, pData->sampleRateIn, &origFormat, &bestFormat);
         if (result != MA_SUCCESS) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return result;
+            goto on_error;
+        }
+
+        /*
+        A hardware device may have more channels than MA_MAX_CHANNELS. Clamp the number of channels in the stream
+        format, to ensure that the audio unit delivers buffers with the same number of channels as internalChannels.
+        */
+        if (bestFormat.mChannelsPerFrame > MA_MAX_CHANNELS) {
+            if ((bestFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0) {
+                UInt32 bytesPerSample = bestFormat.mBytesPerFrame / bestFormat.mChannelsPerFrame;
+                bestFormat.mBytesPerFrame  = bytesPerSample * MA_MAX_CHANNELS;
+                bestFormat.mBytesPerPacket = bestFormat.mBytesPerFrame * bestFormat.mFramesPerPacket;
+            }
+            bestFormat.mChannelsPerFrame = MA_MAX_CHANNELS;
         }
 
         /*
@@ -40368,17 +40612,14 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
         changed by miniaudio.
         */
         if (pData->allowNominalSampleRateChange) {
-            AudioValueRange sampleRateRange;
+            Float64 sampleRate = bestFormat.mSampleRate;
             AudioObjectPropertyAddress propAddress;
-
-            sampleRateRange.mMinimum = bestFormat.mSampleRate;
-            sampleRateRange.mMaximum = bestFormat.mSampleRate;
 
             propAddress.mSelector = kAudioDevicePropertyNominalSampleRate;
             propAddress.mScope    = (deviceType == ma_device_type_playback) ? kAudioObjectPropertyScopeOutput : kAudioObjectPropertyScopeInput;
             propAddress.mElement  = AUDIO_OBJECT_PROPERTY_ELEMENT;
 
-            status = pContextStateCoreAudio->AudioObjectSetPropertyData(deviceObjectID, &propAddress, 0, NULL, sizeof(sampleRateRange), &sampleRateRange);
+            status = pContextStateCoreAudio->AudioObjectSetPropertyData(deviceObjectID, &propAddress, 0, NULL, sizeof(sampleRate), &sampleRate);
             if (status != noErr) {
                 bestFormat.mSampleRate = origFormat.mSampleRate;
             }
@@ -40434,29 +40675,29 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
         
         status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioUnitProperty_StreamFormat, formatScope, formatElement, &bestFormat, sizeof(bestFormat));
         if (status != noErr) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return ma_result_from_OSStatus(status);
+            result = ma_result_from_OSStatus(status);
+            goto on_error;
         }
     #endif
 
         result = ma_format_from_AudioStreamBasicDescription(&bestFormat, &pData->formatOut);
         if (result != MA_SUCCESS) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return result;
+            goto on_error;
         }
 
         if (pData->formatOut == ma_format_unknown) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return MA_FORMAT_NOT_SUPPORTED;
+            result = MA_FORMAT_NOT_SUPPORTED;
+            goto on_error;
         }
 
         pData->channelsOut   = bestFormat.mChannelsPerFrame;
         pData->sampleRateOut = (ma_uint32)bestFormat.mSampleRate;
     }
 
-    /* Clamp the channel count for safety. */
+    /* Reject unsupported channel counts, including those restored by the format fallback above. Clamping only channelsOut would leave it inconsistent with the audio unit's stream format. */
     if (pData->channelsOut > MA_MAX_CHANNELS) {
-        pData->channelsOut = MA_MAX_CHANNELS;
+        result = MA_FORMAT_NOT_SUPPORTED;
+        goto on_error;
     }
 
     /*
@@ -40473,7 +40714,7 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
         /* Try falling back to the channel map from the AudioObject. */
         result = ma_get_AudioObject_channel_map(pContext, deviceObjectID, deviceType, pData->channelMapOut, pData->channelsOut);
         if (result != MA_SUCCESS) {
-            return result;
+            goto on_error;
         }
     #else
         /* Fall back to default assumptions. */
@@ -40500,7 +40741,7 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
 #if defined(MA_APPLE_DESKTOP)
     result = ma_set_AudioObject_buffer_size_in_frames(pContext, deviceObjectID, deviceType, &actualPeriodSizeInFrames);
     if (result != MA_SUCCESS) {
-        return result;
+        goto on_error;
     }
 #else
     /*
@@ -40528,8 +40769,8 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
     */
     status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &actualPeriodSizeInFrames, sizeof(actualPeriodSizeInFrames));
     if (status != noErr) {
-        pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-        return ma_result_from_OSStatus(status);
+        result = ma_result_from_OSStatus(status);
+        goto on_error;
     }
 
     pData->periodSizeInFramesOut = (ma_uint32)actualPeriodSizeInFrames;
@@ -40541,8 +40782,8 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
 
         pBufferList = ma_allocate_AudioBufferList__coreaudio(pData->periodSizeInFramesOut, pData->formatOut, pData->channelsOut, (isInterleaved) ? ma_stream_layout_interleaved : ma_stream_layout_deinterleaved, &pContext->allocationCallbacks);
         if (pBufferList == NULL) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return MA_OUT_OF_MEMORY;
+            result = MA_OUT_OF_MEMORY;
+            goto on_error;
         }
 
         pData->pAudioBufferList = pBufferList;
@@ -40554,34 +40795,23 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
         callbackInfo.inputProc = ma_on_output__coreaudio;
         status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Global, 0, &callbackInfo, sizeof(callbackInfo));
         if (status != noErr) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return ma_result_from_OSStatus(status);
+            result = ma_result_from_OSStatus(status);
+            goto on_error;
         }
     } else {
         callbackInfo.inputProc = ma_on_input__coreaudio;
         status = pContextStateCoreAudio->AudioUnitSetProperty(pData->audioUnit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &callbackInfo, sizeof(callbackInfo));
         if (status != noErr) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return ma_result_from_OSStatus(status);
-        }
-    }
-
-    /* We need to listen for stop events. */
-    if (pData->registerStopEvent) {
-        status = pContextStateCoreAudio->AudioUnitAddPropertyListener(pData->audioUnit, kAudioOutputUnitProperty_IsRunning, ma_on_start_stop__coreaudio, pDevice_DoNotReference);
-        if (status != noErr) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-            return ma_result_from_OSStatus(status);
+            result = ma_result_from_OSStatus(status);
+            goto on_error;
         }
     }
 
     /* Initialize the audio unit. */
     status = pContextStateCoreAudio->AudioUnitInitialize(pData->audioUnit);
     if (status != noErr) {
-        ma_free(pData->pAudioBufferList, &pContext->allocationCallbacks);
-        pData->pAudioBufferList = NULL;
-        pContextStateCoreAudio->AudioComponentInstanceDispose(pData->audioUnit);
-        return ma_result_from_OSStatus(status);
+        result = ma_result_from_OSStatus(status);
+        goto on_error;
     }
 
     /* Grab the name. */
@@ -40595,6 +40825,10 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
     }
 #endif
 
+    return MA_SUCCESS;
+
+on_error:
+    ma_device_uninit_internal__coreaudio(pContext, &pData->audioUnit, &pData->pAudioBufferList);
     return result;
 }
 
@@ -40602,12 +40836,13 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
 static ma_result ma_device_reinit_internal__coreaudio(ma_device* pDevice, ma_device_type deviceType, ma_bool32 disposePreviousAudioUnit)
 {
     ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
-    ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
     ma_device_init_internal_data__coreaudio data;
     ma_device_descriptor internalDescriptor;
+    AudioUnit oldAudioUnit = NULL;
+    AudioBufferList* pOldAudioBufferList = NULL;
     ma_result result;
 
-    /* This should only be called for playback or capture, not duplex. */
+    /* The caller has stopped both units and excluded their callbacks. Rebuild one direction at a time. */
     if (deviceType == ma_device_type_duplex) {
         return MA_INVALID_ARGS;
     }
@@ -40616,23 +40851,8 @@ static ma_result ma_device_reinit_internal__coreaudio(ma_device* pDevice, ma_dev
 
     if (deviceType == ma_device_type_capture) {
         data.shareMode         = pDevice->capture.shareMode;
-        data.registerStopEvent = MA_TRUE;
-
-        if (disposePreviousAudioUnit) {
-            pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitCapture);
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pDeviceStateCoreAudio->audioUnitCapture);
-        }
-        if (pDeviceStateCoreAudio->pAudioBufferList) {
-            ma_free(pDeviceStateCoreAudio->pAudioBufferList, ma_device_get_allocation_callbacks(pDevice));
-        }
-    } else if (deviceType == ma_device_type_playback) {
+    } else {
         data.shareMode         = pDevice->playback.shareMode;
-        data.registerStopEvent = (pDevice->type != ma_device_type_duplex);
-
-        if (disposePreviousAudioUnit) {
-            pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitPlayback);
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pDeviceStateCoreAudio->audioUnitPlayback);
-        }
     }
 
     data.formatIn                   = ma_device_get_format(pDevice, deviceType);
@@ -40664,18 +40884,15 @@ static ma_result ma_device_reinit_internal__coreaudio(ma_device* pDevice, ma_dev
 
     result = ma_device_update_descriptor(pDevice, deviceType, NULL, &internalDescriptor);
     if (result != MA_SUCCESS) {
-        ma_device_uninit__coreaudio(pDevice);
+        ma_device_uninit_internal__coreaudio(pDevice->pContext, &data.audioUnit, &data.pAudioBufferList);
         return result;
     }
 
 
-    /*
-    We need to reinitialize our async state object to account for the new internal format and
-    buffer configuration. To do this we'll need to set up a dummy descriptor.
-    */
-    ma_device_state_async_uninit(&pDeviceStateCoreAudio->async, ma_device_get_allocation_callbacks(pDevice));
-
+    /* Commit the replacement only after initialization and descriptor setup have both succeeded. */
     if (deviceType == ma_device_type_capture) {
+        oldAudioUnit = disposePreviousAudioUnit ? pDeviceStateCoreAudio->audioUnitCapture : NULL;
+        pOldAudioBufferList = pDeviceStateCoreAudio->pAudioBufferList;
     #if defined(MA_APPLE_DESKTOP)
         pDeviceStateCoreAudio->deviceObjectIDCapture  = (ma_uint32)data.deviceObjectID;
         ma_get_AudioObject_uid(pDevice->pContext, pDeviceStateCoreAudio->deviceObjectIDCapture, sizeof(pDevice->capture.id.coreaudio), pDevice->capture.id.coreaudio);
@@ -40684,6 +40901,7 @@ static ma_result ma_device_reinit_internal__coreaudio(ma_device* pDevice, ma_dev
         pDeviceStateCoreAudio->pAudioBufferList       = data.pAudioBufferList;
         pDeviceStateCoreAudio->audioBufferCapInFrames = data.periodSizeInFramesOut;
     } else if (deviceType == ma_device_type_playback) {
+        oldAudioUnit = disposePreviousAudioUnit ? pDeviceStateCoreAudio->audioUnitPlayback : NULL;
     #if defined(MA_APPLE_DESKTOP)
         pDeviceStateCoreAudio->deviceObjectIDPlayback = (ma_uint32)data.deviceObjectID;
         ma_get_AudioObject_uid(pDevice->pContext, pDeviceStateCoreAudio->deviceObjectIDPlayback, sizeof(pDevice->playback.id.coreaudio), pDevice->playback.id.coreaudio);
@@ -40691,31 +40909,9 @@ static ma_result ma_device_reinit_internal__coreaudio(ma_device* pDevice, ma_dev
         pDeviceStateCoreAudio->audioUnitPlayback      = data.audioUnit;
     }
 
-    {
-        ma_device_descriptor descriptorPlayback;
-        ma_device_descriptor descriptorCapture;
+    ma_device_uninit_internal__coreaudio(pDevice->pContext, &oldAudioUnit, &pOldAudioBufferList);
 
-        MA_ZERO_OBJECT(&descriptorPlayback);
-        descriptorPlayback.format             = ma_device_get_internal_format(pDevice, ma_device_type_playback);
-        descriptorPlayback.channels           = ma_device_get_internal_channels(pDevice, ma_device_type_playback);
-        descriptorPlayback.sampleRate         = ma_device_get_internal_sample_rate(pDevice, ma_device_type_playback);
-        descriptorPlayback.periodSizeInFrames = pDevice->playback.internalPeriodSizeInFrames;
-        descriptorPlayback.periodCount        = pDevice->playback.internalPeriods;
-
-        MA_ZERO_OBJECT(&descriptorCapture);
-        descriptorCapture.format              = ma_device_get_internal_format(pDevice, ma_device_type_capture);
-        descriptorCapture.channels            = ma_device_get_internal_channels(pDevice, ma_device_type_capture);
-        descriptorCapture.sampleRate          = ma_device_get_internal_sample_rate(pDevice, ma_device_type_capture);
-        descriptorCapture.periodSizeInFrames  = pDevice->capture.internalPeriodSizeInFrames;
-        descriptorCapture.periodCount         = pDevice->capture.internalPeriods;
-
-        result = ma_device_state_async_init(ma_device_get_type(pDevice), &descriptorPlayback, &descriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateCoreAudio->async);
-        if (result != MA_SUCCESS) {
-            ma_device_uninit__coreaudio(pDevice);
-            return result;
-        }
-    }
-
+    /* The caller rebuilds the shared async buffers after both directions have been reconfigured. */
     return MA_SUCCESS;
 }
 #endif /* MA_APPLE_DESKTOP */
@@ -40725,9 +40921,10 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
     ma_device_state_coreaudio* pDeviceStateCoreAudio;
     const ma_device_config_coreaudio* pDeviceConfigCoreAudio = (const ma_device_config_coreaudio*)pDeviceBackendConfig;
     ma_device_config_coreaudio defaultConfigCoreAudio;
-    ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
     ma_device_type deviceType = ma_device_get_type(pDevice);
     ma_result result;
+
+    *ppDeviceState = NULL;
 
     if (pDeviceConfigCoreAudio == NULL) {
         defaultConfigCoreAudio = ma_device_config_coreaudio_init();
@@ -40749,6 +40946,9 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
         return MA_OUT_OF_MEMORY;
     }
 
+    pDeviceStateCoreAudio->areAudioUnitsStopped = MA_TRUE;
+    ma_atomic_bool32_set(&pDeviceStateCoreAudio->isCallbackProcessingBlocked, MA_TRUE);
+
     /* Capture needs to be initialized first. */
     if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
         ma_device_init_internal_data__coreaudio data;
@@ -40761,7 +40961,6 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
         data.periodSizeInMillisecondsIn   = pDescriptorCapture->periodSizeInMilliseconds;
         data.periodsIn                    = pDescriptorCapture->periodCount;
         data.shareMode                    = pDescriptorCapture->shareMode;
-        data.registerStopEvent            = MA_TRUE;
 
         /* Need at least 3 periods for duplex. */
         if (data.periodsIn < 3 && deviceType == ma_device_type_duplex) {
@@ -40770,8 +40969,7 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
 
         result = ma_device_init_internal__coreaudio(ma_device_get_context(pDevice), ma_device_type_capture, pDescriptorCapture->pDeviceID, &data, (void*)pDevice);
         if (result != MA_SUCCESS) {
-            ma_free(pDeviceStateCoreAudio, ma_device_get_allocation_callbacks(pDevice));
-            return result;
+            goto on_error;
         }
 
         pDeviceStateCoreAudio->isDefaultCaptureDevice           = (pDescriptorCapture->pDeviceID == NULL);
@@ -40794,14 +40992,6 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
 
     #if defined(MA_APPLE_DESKTOP)
         ma_get_AudioObject_uid(ma_device_get_context(pDevice), pDeviceStateCoreAudio->deviceObjectIDCapture, sizeof(pDevice->capture.id.coreaudio), pDevice->capture.id.coreaudio);
-
-        /*
-        If we are using the default device we'll need to listen for changes to the system's default device so we can seamlessly
-        switch the device in the background.
-        */
-        if (pDescriptorCapture->pDeviceID == NULL) {
-            ma_device__track__coreaudio(pDevice);
-        }
     #endif
     }
 
@@ -40819,25 +41009,15 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
         if (deviceType == ma_device_type_duplex) {
             data.periodSizeInFramesIn       = pDescriptorCapture->periodSizeInFrames;
             data.periodsIn                  = pDescriptorCapture->periodCount;
-            data.registerStopEvent          = MA_FALSE;
         } else {
             data.periodSizeInFramesIn       = pDescriptorPlayback->periodSizeInFrames;
             data.periodSizeInMillisecondsIn = pDescriptorPlayback->periodSizeInMilliseconds;
             data.periodsIn                  = pDescriptorPlayback->periodCount;
-            data.registerStopEvent          = MA_TRUE;
         }
 
         result = ma_device_init_internal__coreaudio(ma_device_get_context(pDevice), ma_device_type_playback, pDescriptorPlayback->pDeviceID, &data, (void*)pDevice);
         if (result != MA_SUCCESS) {
-            if (deviceType == ma_device_type_duplex) {
-                pContextStateCoreAudio->AudioComponentInstanceDispose(pDeviceStateCoreAudio->audioUnitCapture);
-                if (pDeviceStateCoreAudio->pAudioBufferList) {
-                    ma_free(pDeviceStateCoreAudio->pAudioBufferList, ma_device_get_allocation_callbacks(pDevice));
-                }
-            }
-
-            ma_free(pDeviceStateCoreAudio, ma_device_get_allocation_callbacks(pDevice));
-            return result;
+            goto on_error;
         }
 
         pDeviceStateCoreAudio->isDefaultPlaybackDevice          = (pDescriptorPlayback->pDeviceID == NULL);
@@ -40858,188 +41038,411 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const void* pDevi
 
     #if defined(MA_APPLE_DESKTOP)
         ma_get_AudioObject_uid(ma_device_get_context(pDevice), pDeviceStateCoreAudio->deviceObjectIDPlayback, sizeof(pDevice->playback.id.coreaudio), pDevice->playback.id.coreaudio);
-
-        /*
-        If we are using the default device we'll need to listen for changes to the system's default device so we can seamlessly
-        switch the device in the background.
-        */
-        if (pDescriptorPlayback->pDeviceID == NULL && (deviceType != ma_device_type_duplex || pDescriptorCapture->pDeviceID != NULL)) {
-            ma_device__track__coreaudio(pDevice);
-        }
     #endif
     }
 
     result = ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateCoreAudio->async);
     if (result != MA_SUCCESS) {
-        if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pDeviceStateCoreAudio->audioUnitCapture);
-            if (pDeviceStateCoreAudio->pAudioBufferList) {
-                ma_free(pDeviceStateCoreAudio->pAudioBufferList, ma_device_get_allocation_callbacks(pDevice));
-            }
-        }
-
-        if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
-            pContextStateCoreAudio->AudioComponentInstanceDispose(pDeviceStateCoreAudio->audioUnitPlayback);
-        }
+        goto on_error;
     }
 
-    /*
-    When stopping the device, a callback is called on another thread. We need to wait for this callback
-    before returning from ma_device_stop(). This event is used for this.
-    */
-    ma_event_init(&pDeviceStateCoreAudio->stopEvent);
+    ma_atomic_uint32_set(&pDeviceStateCoreAudio->requestedPlaybackFrameCap, pDeviceStateCoreAudio->async.playback.frameCap);
+    ma_atomic_uint32_set(&pDeviceStateCoreAudio->requestedCaptureFrameCap, pDeviceStateCoreAudio->async.capture.frameCap);
+
+#if defined(MA_APPLE_DESKTOP)
+    if (pDeviceStateCoreAudio->isDefaultCaptureDevice || pDeviceStateCoreAudio->isDefaultPlaybackDevice) {
+        ma_device__track__coreaudio(pDevice, pDeviceStateCoreAudio);
+    }
+#endif
 
     /*
     We need to detect when a route has changed so we can update the data conversion pipeline accordingly. This is done
     differently on non-Desktop Apple platforms.
     */
 #if defined(MA_APPLE_MOBILE)
-    pDeviceStateCoreAudio->pNotificationHandler = (MA_BRIDGE_RETAINED void*)[[ma_ios_notification_handler alloc] init:pDevice];
+    pDeviceStateCoreAudio->pNotificationHandler = (MA_BRIDGE_RETAINED void*)[[ma_ios_notification_handler alloc] init:pDevice state:pDeviceStateCoreAudio];
+    if (pDeviceStateCoreAudio->pNotificationHandler == NULL) {
+        result = MA_OUT_OF_MEMORY;
+        ma_device_state_async_uninit(&pDeviceStateCoreAudio->async, ma_device_get_allocation_callbacks(pDevice));
+        goto on_error;
+    }
 #endif
 
     *ppDeviceState = pDeviceStateCoreAudio;
 
     return MA_SUCCESS;
+
+on_error:
+    {
+        AudioBufferList* pUnusedBufferList = NULL;
+        ma_device_uninit_internal__coreaudio(ma_device_get_context(pDevice), &pDeviceStateCoreAudio->audioUnitPlayback, &pUnusedBufferList);
+        ma_device_uninit_internal__coreaudio(ma_device_get_context(pDevice), &pDeviceStateCoreAudio->audioUnitCapture, &pDeviceStateCoreAudio->pAudioBufferList);
+    }
+    ma_free(pDeviceStateCoreAudio, ma_device_get_allocation_callbacks(pDevice));
+    return result;
 }
 
 
-static ma_result ma_device_start__coreaudio(ma_device* pDevice)
+static ma_result ma_device_resize_buffers__coreaudio(ma_device* pDevice, ma_bool32 wasReinitialized)
+{
+    ma_device_state_coreaudio* pState = ma_device_get_backend_state__coreaudio(pDevice);
+    ma_device_type deviceType = ma_device_get_type(pDevice);
+    ma_uint32 playbackFrameCap = ma_max(pState->async.playback.frameCap, ma_atomic_uint32_get(&pState->requestedPlaybackFrameCap));
+    ma_uint32 captureFrameCap = ma_max(pState->async.capture.frameCap, ma_atomic_uint32_get(&pState->requestedCaptureFrameCap));
+    ma_result result;
+
+    if (wasReinitialized) {
+        if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
+            pState->async.playback.format = ma_device_get_internal_format(pDevice, ma_device_type_playback);
+            pState->async.playback.channels = ma_device_get_internal_channels(pDevice, ma_device_type_playback);
+            playbackFrameCap = ma_max(playbackFrameCap, pDevice->playback.internalPeriodSizeInFrames);
+        }
+        if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
+            pState->async.capture.format = ma_device_get_internal_format(pDevice, ma_device_type_capture);
+            pState->async.capture.channels = ma_device_get_internal_channels(pDevice, ma_device_type_capture);
+            captureFrameCap = ma_max(captureFrameCap, pDevice->capture.internalPeriodSizeInFrames);
+        }
+    }
+
+    if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
+        ma_stream_layout layout = (pState->pAudioBufferList->mBuffers[0].mNumberChannels == pState->async.capture.channels) ? ma_stream_layout_interleaved : ma_stream_layout_deinterleaved;
+        result = ma_device_realloc_AudioBufferList__coreaudio(pDevice, captureFrameCap, pState->async.capture.format, pState->async.capture.channels, layout);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
+    }
+
+    /* Both callbacks are excluded and this is the device worker, so nobody can still use the old allocation. Keep the semaphore alive: wakeup and default-device notifications can still release it. */
+    result = ma_device_state_async_resize(&pState->async, playbackFrameCap, captureFrameCap, ma_device_get_allocation_callbacks(pDevice));
+    if (result == MA_SUCCESS) {
+        pState->async.playback.frameCount = 0;
+        pState->async.capture.frameCount = 0;
+    }
+
+    return result;
+}
+
+static void ma_device_wait_for_callbacks__coreaudio(ma_device_state_coreaudio* pState)
+{
+    /* The caller has closed the callback gate. Wait for callbacks which entered before it closed. */
+    ma_spinlock_lock(&pState->captureCallbackLock);
+    ma_spinlock_lock(&pState->playbackCallbackLock);
+    {
+        /* Do nothing. */
+    }
+    ma_spinlock_unlock(&pState->playbackCallbackLock);
+    ma_spinlock_unlock(&pState->captureCallbackLock);
+}
+
+static ma_result ma_device_stop_audio_units__coreaudio(ma_device* pDevice)
+{
+    ma_device_state_coreaudio* pState = ma_device_get_backend_state__coreaudio(pDevice);
+    ma_context_state_coreaudio* pContextState = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
+    ma_result result = MA_SUCCESS;
+    OSStatus status;
+
+    if (pState->areAudioUnitsStopped) {
+        return MA_SUCCESS;
+    }
+
+    if (pState->audioUnitCapture != NULL) {
+        status = pContextState->AudioOutputUnitStop(pState->audioUnitCapture);
+        if (status != noErr) {
+            result = ma_result_from_OSStatus(status);
+        }
+    }
+
+    if (pState->audioUnitPlayback != NULL) {
+        status = pContextState->AudioOutputUnitStop(pState->audioUnitPlayback);
+        if (status != noErr) {
+            result = ma_result_from_OSStatus(status);
+        }
+    }
+
+    pState->areAudioUnitsStopped = (result == MA_SUCCESS);
+
+    return result;
+}
+
+static ma_result ma_device_start_internal__coreaudio(ma_device* pDevice, ma_bool32 isInterruptionRecovery)
 {
     ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
     ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
     ma_device_type deviceType = ma_device_get_type(pDevice);
+    OSStatus status;
 
+    #if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+    ma_uint32 interruptionGeneration;
+    ma_result result;
+
+    ma_spinlock_lock(&pDeviceStateCoreAudio->interruptionLock);
+    {
+        result = ma_device_prepare_start_nolock__coreaudio(pDeviceStateCoreAudio, isInterruptionRecovery, &interruptionGeneration);
+    }
+    ma_spinlock_unlock(&pDeviceStateCoreAudio->interruptionLock);
+
+    if (result != MA_SUCCESS) {
+        if (result == MA_NO_DATA_AVAILABLE && !isInterruptionRecovery) {
+            return MA_SUCCESS;
+        }
+
+        return result;
+    }
+
+    result = ma_device_activate_audio_session__coreaudio(pDevice);
+    if (result != MA_SUCCESS) {
+        if (!ma_device_validate_start__coreaudio(pDeviceStateCoreAudio, interruptionGeneration, MA_FALSE)) {
+            return MA_SUCCESS;
+        }
+
+        return result;
+    }
+
+    /* Activation can synchronously deliver another interruption. Never open the gate for an obsolete start. */
+    if (!ma_device_validate_start__coreaudio(pDeviceStateCoreAudio, interruptionGeneration, MA_TRUE)) {
+        return MA_SUCCESS;
+    }
+    #else
+    (void)isInterruptionRecovery;
+
+    /* All stream resources are ready before the first callback can be delivered by Start(). */
+    ma_atomic_bool32_set(&pDeviceStateCoreAudio->isCallbackProcessingBlocked, MA_FALSE);
+    #endif
+
+    
     if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
-        OSStatus status = pContextStateCoreAudio->AudioOutputUnitStart(pDeviceStateCoreAudio->audioUnitCapture);
+        status = pContextStateCoreAudio->AudioOutputUnitStart(pDeviceStateCoreAudio->audioUnitCapture);
         if (status != noErr) {
-            return ma_result_from_OSStatus(status);
+            goto on_error;
         }
     }
 
     if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
-        OSStatus status = pContextStateCoreAudio->AudioOutputUnitStart(pDeviceStateCoreAudio->audioUnitPlayback);
+        status = pContextStateCoreAudio->AudioOutputUnitStart(pDeviceStateCoreAudio->audioUnitPlayback);
         if (status != noErr) {
-            if (deviceType == ma_device_type_duplex) {
-                pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitCapture);
-            }
-            return ma_result_from_OSStatus(status);
+            goto on_error;
         }
     }
 
+    pDeviceStateCoreAudio->areAudioUnitsStopped = MA_FALSE;
+
+    #if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+    if (!ma_device_validate_start__coreaudio(pDeviceStateCoreAudio, interruptionGeneration, MA_FALSE)) {
+        ma_device_stop_audio_units__coreaudio(pDevice);
+        ma_device_wait_for_callbacks__coreaudio(pDeviceStateCoreAudio);
+    }
+    #endif
+
     return MA_SUCCESS;
+
+on_error:
+    /* A failed duplex start may already have started capture. Stop it and wait for active callbacks to finish before returning. */
+    ma_atomic_bool32_set(&pDeviceStateCoreAudio->isCallbackProcessingBlocked, MA_TRUE);
+    pDeviceStateCoreAudio->areAudioUnitsStopped = MA_FALSE;
+    ma_device_stop_audio_units__coreaudio(pDevice);
+    ma_device_wait_for_callbacks__coreaudio(pDeviceStateCoreAudio);
+
+    #if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+    if (!ma_device_validate_start__coreaudio(pDeviceStateCoreAudio, interruptionGeneration, MA_FALSE)) {
+        return MA_SUCCESS;
+    }
+    #endif
+
+    return ma_result_from_OSStatus(status);
+}
+
+static ma_result ma_device_start__coreaudio(ma_device* pDevice)
+{
+    return ma_device_start_internal__coreaudio(pDevice, MA_FALSE);
 }
 
 static ma_result ma_device_stop__coreaudio(ma_device* pDevice)
 {
     ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
-    ma_context_state_coreaudio* pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
-    ma_device_type deviceType = ma_device_get_type(pDevice);
+    ma_result result;
 
-    /* It's not clear from the documentation whether or not AudioOutputUnitStop() actually drains the device or not. */
-
-    if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
-        OSStatus status = pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitCapture);
-        if (status != noErr) {
-            return ma_result_from_OSStatus(status);
-        }
-    }
-
-    if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
-        OSStatus status = pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitPlayback);
-        if (status != noErr) {
-            return ma_result_from_OSStatus(status);
-        }
-    }
-
-    /* We need to wait for the callback to finish before returning. */
-    ma_event_wait(&pDeviceStateCoreAudio->stopEvent);
-    return MA_SUCCESS;
+    /* Stop completion is based on audio callbacks leaving, not on an unrelated property notification. */
+    ma_atomic_bool32_set(&pDeviceStateCoreAudio->isCallbackProcessingBlocked, MA_TRUE);
+    result = ma_device_stop_audio_units__coreaudio(pDevice);
+    ma_device_wait_for_callbacks__coreaudio(pDeviceStateCoreAudio);
+    return result;
 }
 
 
 static ma_result ma_device_step_extra__coreaudio(ma_device* pDevice)
 {
+    ma_device_state_coreaudio* pState = ma_device_get_backend_state__coreaudio(pDevice);
+    ma_result result = MA_SUCCESS;
+    ma_bool32 switchPlayback = MA_FALSE;
+    ma_bool32 switchCapture = MA_FALSE;
+    ma_bool32 wasReinitialized;
+
     #if defined(MA_APPLE_DESKTOP)
     {
-        ma_result result = MA_SUCCESS;
-        ma_bool32 wasReinitialized = MA_FALSE;
-        ma_device_state_coreaudio* pDeviceStateCoreAudio;
-        ma_context_state_coreaudio* pContextStateCoreAudio;
-        ma_device_type deviceType = ma_device_get_type(pDevice);
+        switchPlayback = ma_atomic_bool32_exchange(&pState->isSwitchingPlaybackDevice, MA_FALSE);
+        switchCapture  = ma_atomic_bool32_exchange(&pState->isSwitchingCaptureDevice,  MA_FALSE);
+    }
+    #endif
+    wasReinitialized = switchPlayback || switchCapture;
 
-        pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
-        pContextStateCoreAudio = ma_context_get_backend_state__coreaudio(ma_device_get_context(pDevice));
+    if (!wasReinitialized &&
+        ma_atomic_uint32_get(&pState->requestedPlaybackFrameCap) <= pState->async.playback.frameCap &&
+        ma_atomic_uint32_get(&pState->requestedCaptureFrameCap) <= pState->async.capture.frameCap) {
+        return MA_SUCCESS;
+    }
 
-        if (ma_atomic_bool32_get(&pDeviceStateCoreAudio->isSwitchingPlaybackDevice)) {
-            result = ma_device_reinit_internal__coreaudio(pDevice, ma_device_type_playback, MA_TRUE);
-            ma_atomic_bool32_set(&pDeviceStateCoreAudio->isSwitchingPlaybackDevice, MA_FALSE);
+    ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, MA_TRUE);
 
-            /* If we failed to switch devices stop the device outright. */
-            if (result != MA_SUCCESS) {
-                pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitPlayback);
-                return result;  /* Rerouting failed. */
+    /* A route change can replace descriptors and the shared buffer for both directions. Stop both units first. */
+    if (wasReinitialized) {
+        result = ma_device_stop_audio_units__coreaudio(pDevice);
+        if (result != MA_SUCCESS) {
+            goto on_error;
+        }
+    }
+
+    /* Wait for callbacks which entered before the gate was closed. New callbacks return immediately. */
+    ma_spinlock_lock(&pState->captureCallbackLock);
+    ma_spinlock_lock(&pState->playbackCallbackLock);
+    {
+        #if defined(MA_APPLE_DESKTOP)
+        {
+            if (switchPlayback) {
+                result = ma_device_reinit_internal__coreaudio(pDevice, ma_device_type_playback, MA_TRUE);
             }
 
-            wasReinitialized = MA_TRUE;
-        }
-
-        if (ma_atomic_bool32_get(&pDeviceStateCoreAudio->isSwitchingCaptureDevice)) {
-            result = ma_device_reinit_internal__coreaudio(pDevice, ma_device_type_capture, MA_TRUE);
-            ma_atomic_bool32_set(&pDeviceStateCoreAudio->isSwitchingCaptureDevice, MA_FALSE);
-
-            /* If we failed to switch devices stop the device outright. */
-            if (result != MA_SUCCESS) {
-                pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitCapture);
-                return result;  /* Rerouting failed. */
+            if (result == MA_SUCCESS && switchCapture) {
+                result = ma_device_reinit_internal__coreaudio(pDevice, ma_device_type_capture, MA_TRUE);
             }
-
-            wasReinitialized = MA_TRUE;
         }
+        #endif
 
-        if (wasReinitialized && result == MA_SUCCESS) {
-            /* Restart the device if required. If this fails we need to stop the device entirely. */
-            if (ma_device_get_status(pDevice) == ma_device_status_started) {
-                OSStatus status;
-                if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
-                    status = pContextStateCoreAudio->AudioOutputUnitStart(pDeviceStateCoreAudio->audioUnitPlayback);
-                    if (status != noErr) {
-                        if (deviceType == ma_device_type_duplex) {
-                            pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitCapture);
-                        }
-
-                        return ma_result_from_OSStatus(status);
-                    }
-                }
-                
-                if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
-                    status = pContextStateCoreAudio->AudioOutputUnitStart(pDeviceStateCoreAudio->audioUnitCapture);
-                    if (status != noErr) {
-                        if (deviceType == ma_device_type_duplex) {
-                            pContextStateCoreAudio->AudioOutputUnitStop(pDeviceStateCoreAudio->audioUnitPlayback);
-                        }
-
-                        return ma_result_from_OSStatus(status);
-                    }
-                }
-            }
-
-            ma_device_post_notification_rerouted(pDevice);
+        if (result == MA_SUCCESS) {
+            result = ma_device_resize_buffers__coreaudio(pDevice, wasReinitialized);
         }
+    }
+    ma_spinlock_unlock(&pState->playbackCallbackLock);
+    ma_spinlock_unlock(&pState->captureCallbackLock);
+
+    if (result != MA_SUCCESS) {
+        goto on_error;
+    }
+
+    #if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+    {
+        ma_spinlock_lock(&pState->interruptionLock);
+        {
+            ma_device_restore_callback_gate_nolock__coreaudio(pState);
+        }
+        ma_spinlock_unlock(&pState->interruptionLock);
     }
     #else
     {
-        /* iOS. Nothing to do here. */
-        (void)pDevice;
+        ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, pState->areAudioUnitsStopped);
     }
     #endif
-    
+
+    if (wasReinitialized) {
+        if (ma_device_is_started(pDevice)) {
+            result = ma_device_start__coreaudio(pDevice);
+            if (result != MA_SUCCESS) {
+                goto on_error;
+            }
+        }
+
+        ma_device_post_notification_rerouted(pDevice);
+    }
+
     return MA_SUCCESS;
+
+on_error:
+    /* Do not resume callbacks with a partially rebuilt format or allocation. Final teardown owns the state. */
+    ma_atomic_bool32_set(&pState->isCallbackProcessingBlocked, MA_TRUE);
+    ma_device_stop_audio_units__coreaudio(pDevice);
+    ma_device_wait_for_callbacks__coreaudio(pState);
+    ma_device_set_errored(pDevice);
+    return result;
 }
 
 static ma_result ma_device_step__coreaudio(ma_device* pDevice, ma_blocking_mode blockingMode)
 {
     ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
-    return ma_device_state_async_step(&pDeviceStateCoreAudio->async, pDevice, blockingMode, ma_device_step_extra__coreaudio);
+
+    #if defined(MA_APPLE_MOBILE) /* Interruption recovery. */
+    {
+        ma_result result;
+        ma_bool32 needsRecovery;
+
+        for (;;) {
+            if (blockingMode == MA_BLOCKING_MODE_BLOCKING) {
+                ma_device_state_async_wait(&pDeviceStateCoreAudio->async);
+            }
+
+            if (!ma_device_is_started(pDevice)) {
+                return MA_DEVICE_NOT_STARTED;
+            }
+
+            needsRecovery = ma_device_needs_interruption_recovery__coreaudio(pDeviceStateCoreAudio);
+            if (needsRecovery) {
+                result = ma_device_stop__coreaudio(pDevice);
+                if (result != MA_SUCCESS) {
+                    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "[Core Audio] Failed to suspend device: %s", ma_result_description(result));
+                    if (!pDevice->hasAudioThread) {
+                        ma_device_stop(pDevice);
+                    }
+
+                    return result;
+                }
+
+                /* Recheck the interruption state in start_internal: notifications may arrive while stopping. */
+                result = ma_device_start_internal__coreaudio(pDevice, MA_TRUE);
+                if (result == MA_NO_DATA_AVAILABLE) {
+                    if (blockingMode == MA_BLOCKING_MODE_NON_BLOCKING) {
+                        return MA_NO_DATA_AVAILABLE;
+                    }
+
+                    continue;
+                }
+
+                if (result != MA_SUCCESS) {
+                    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_INFO, "[Core Audio] Interruption recovery stopped: %s", ma_result_description(result));
+                    if (!pDevice->hasAudioThread) {
+                        ma_device_stop(pDevice);
+                    }
+
+                    return result;
+                }
+
+                needsRecovery = ma_device_needs_interruption_recovery__coreaudio(pDeviceStateCoreAudio);
+                if (needsRecovery) {
+                    if (blockingMode == MA_BLOCKING_MODE_NON_BLOCKING) {
+                        return MA_NO_DATA_AVAILABLE;
+                    }
+
+                    continue;
+                }
+            }
+
+            /* The semaphore was consumed above. Never wait a second time for an audio callback. */
+            return ma_device_state_async_step(&pDeviceStateCoreAudio->async, pDevice, MA_BLOCKING_MODE_NON_BLOCKING, ma_device_step_extra__coreaudio);
+        }
+    }
+    #else
+    {
+        return ma_device_state_async_step(&pDeviceStateCoreAudio->async, pDevice, blockingMode, ma_device_step_extra__coreaudio);
+    }
+    #endif
+}
+
+static void ma_device_wakeup__coreaudio(ma_device* pDevice)
+{
+    ma_device_state_coreaudio* pDeviceStateCoreAudio = ma_device_get_backend_state__coreaudio(pDevice);
+
+    /*
+    The step function blocks until Core Audio fires a data callback. If Core Audio is no longer firing
+    callbacks, ma_device_uninit() and ma_device_stop() would otherwise wait forever on the audio thread.
+    */
+    ma_device_state_async_release(&pDeviceStateCoreAudio->async);
 }
 
 static ma_device_backend_vtable ma_gDeviceBackendVTable_CoreAudio =
@@ -41053,7 +41456,7 @@ static ma_device_backend_vtable ma_gDeviceBackendVTable_CoreAudio =
     ma_device_start__coreaudio,
     ma_device_stop__coreaudio,
     ma_device_step__coreaudio,
-    NULL    /* onDeviceWakeup */
+    ma_device_wakeup__coreaudio
 };
 
 ma_device_backend_vtable* ma_device_backend_coreaudio = &ma_gDeviceBackendVTable_CoreAudio;
@@ -44911,7 +45314,8 @@ typedef struct ma_context_state_aaudio
 
 typedef struct ma_device_state_aaudio
 {
-    ma_device_state_async async;
+    ma_device_state_async async;    /* Only used in single-threaded mode. */
+    ma_semaphore stepSemaphore;
     ma_AAudioStream* pStreamPlayback;
     ma_AAudioStream* pStreamCapture;
     ma_atomic_bool32 isTearingDown;
@@ -44922,7 +45326,7 @@ typedef struct ma_device_state_aaudio
     ma_aaudio_input_preset inputPreset;
     ma_aaudio_allowed_capture_policy allowedCapturePolicy;
     ma_bool32 noAutoStartAfterReroute;
-    ma_bool32 allowSetBufferCapacity;
+    ma_bool32 noSetBufferCapacity;
 } ma_device_state_aaudio;
 
 
@@ -44938,6 +45342,7 @@ static ma_device_state_aaudio* ma_device_get_backend_state__aaudio(ma_device* pD
 
 
 static ma_result ma_device_start__aaudio(ma_device* pDevice);
+static void ma_device_wakeup__aaudio(ma_device* pDevice);
 static ma_result ma_device_step__aaudio(ma_device* pDevice, ma_blocking_mode blockingMode);
 
 
@@ -45094,7 +45499,7 @@ static void ma_stream_error_callback__aaudio(ma_AAudioStream* pStream, void* pUs
         }
 
         /* Make sure we wake up the semaphore so we can handle the rerouting in the step function. Not doing this might result in us getting stuck waiting. */
-        ma_device_state_async_release(&pDeviceStateAAudio->async);
+        ma_device_wakeup__aaudio(pDevice);
     }
 }
 
@@ -45106,7 +45511,11 @@ static ma_aaudio_data_callback_result_t ma_stream_data_callback_capture__aaudio(
     MA_ASSERT(pDevice != NULL);
 
     if (frameCount > 0) {
-        ma_device_state_async_process(&pDeviceStateAAudio->async, pDevice, NULL, pAudioData, (ma_uint32)frameCount);
+        if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+            ma_device_state_async_process(&pDeviceStateAAudio->async, pDevice, NULL, pAudioData, (ma_uint32)frameCount);
+        } else {
+            ma_device_handle_backend_data_callback(pDevice, NULL, pAudioData, (ma_uint32)frameCount);
+        }
     }
 
     (void)pStream;
@@ -45127,7 +45536,11 @@ static ma_aaudio_data_callback_result_t ma_stream_data_callback_playback__aaudio
     */
     if (frameCount > 0) {
         /*ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "AAudio Playback Callback: frameCount=%d, async.frameCap=%d\n", frameCount, pDeviceStateAAudio->async.playback.frameCap);*/
-        ma_device_state_async_process(&pDeviceStateAAudio->async, pDevice, pAudioData, NULL, (ma_uint32)frameCount);
+        if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+            ma_device_state_async_process(&pDeviceStateAAudio->async, pDevice, pAudioData, NULL, (ma_uint32)frameCount);
+        } else {
+            ma_device_handle_backend_data_callback(pDevice, pAudioData, NULL, (ma_uint32)frameCount);
+        }
     }
 
     (void)pStream;
@@ -45176,11 +45589,10 @@ static ma_result ma_create_and_configure_AAudioStreamBuilder__aaudio(ma_context*
         /*
         There have been reports where setting the frames per data callback results in an error.
         In particular, re-routing may inadvertently switch from low-latency mode, resulting in a less stable
-        stream from the legacy path (AudioStreamLegacy). To address this, we simply don't set the value. It
-        can still be set if it's explicitly requested via the aaudio.allowSetBufferCapacity variable in the
-        device config.
+        stream from the legacy path (AudioStreamLegacy). Set noSetBufferCapacity to true in the AAudio
+        device config to let AAudio choose the buffer capacity and frames per data callback.
         */
-        if (pDeviceConfigAAudio->allowSetBufferCapacity) {
+        if (!pDeviceConfigAAudio->noSetBufferCapacity) {
             /*
             AAudio is annoying when it comes to its buffer calculation stuff because it doesn't let you
             retrieve the actual sample rate until after you've opened the stream. But you need to configure
@@ -45412,7 +45824,9 @@ static ma_result ma_close_streams__aaudio(ma_device* pDevice)
         pDeviceStateAAudio->pStreamPlayback = NULL;
     }
 
-    ma_device_state_async_uninit(&pDeviceStateAAudio->async, ma_device_get_allocation_callbacks(pDevice));
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+        ma_device_state_async_uninit(&pDeviceStateAAudio->async, ma_device_get_allocation_callbacks(pDevice));
+    }
 
     return MA_SUCCESS;
 }
@@ -45481,7 +45895,7 @@ static ma_result ma_device_init_streams__aaudio(ma_device* pDevice, ma_device_st
     pDeviceStateAAudio->inputPreset             = pDeviceConfigAAudio->inputPreset;
     pDeviceStateAAudio->allowedCapturePolicy    = pDeviceConfigAAudio->allowedCapturePolicy;
     pDeviceStateAAudio->noAutoStartAfterReroute = pDeviceConfigAAudio->noAutoStartAfterReroute;
-    pDeviceStateAAudio->allowSetBufferCapacity  = pDeviceConfigAAudio->allowSetBufferCapacity;
+    pDeviceStateAAudio->noSetBufferCapacity     = pDeviceConfigAAudio->noSetBufferCapacity;
 
     if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
         result = ma_device_init_by_type__aaudio(pDevice, pDeviceConfigAAudio, ma_device_type_capture, pDescriptorCapture, &pDeviceStateAAudio->pStreamCapture);
@@ -45497,10 +45911,12 @@ static ma_result ma_device_init_streams__aaudio(ma_device* pDevice, ma_device_st
         }
     }
 
-    result = ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateAAudio->async);
-    if (result != MA_SUCCESS) {
-        ma_close_streams__aaudio(pDevice);
-        return result;
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+        result = ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateAAudio->async);
+        if (result != MA_SUCCESS) {
+            ma_close_streams__aaudio(pDevice);
+            return result;
+        }
     }
 
     return MA_SUCCESS;
@@ -45523,6 +45939,15 @@ static ma_result ma_device_init__aaudio(ma_device* pDevice, const void* pDeviceB
         return result;
     }
 
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_MULTI_THREADED) {
+        result = ma_semaphore_init(0, &pDeviceStateAAudio->stepSemaphore);
+        if (result != MA_SUCCESS) {
+            ma_close_streams__aaudio(pDevice);
+            ma_free(pDeviceStateAAudio, ma_device_get_allocation_callbacks(pDevice));
+            return result;
+        }
+    }
+
     *ppDeviceState = pDeviceStateAAudio;
 
     return MA_SUCCESS;
@@ -45539,6 +45964,10 @@ static void ma_device_uninit__aaudio(ma_device* pDevice)
     ma_atomic_bool32_set(&pDeviceStateAAudio->isTearingDown, MA_TRUE);
 
     ma_close_streams__aaudio(pDevice);
+
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_MULTI_THREADED) {
+        ma_semaphore_uninit(&pDeviceStateAAudio->stepSemaphore);
+    }
 
     ma_free(pDeviceStateAAudio, ma_device_get_allocation_callbacks(pDevice));
 }
@@ -45576,7 +46005,7 @@ static ma_result ma_device_reinit__aaudio(ma_device* pDevice, ma_device_type dev
         deviceConfigAAudio.inputPreset             = pDeviceStateAAudio->inputPreset;
         deviceConfigAAudio.allowedCapturePolicy    = pDeviceStateAAudio->allowedCapturePolicy;
         deviceConfigAAudio.noAutoStartAfterReroute = pDeviceStateAAudio->noAutoStartAfterReroute;
-        deviceConfigAAudio.allowSetBufferCapacity  = pDeviceStateAAudio->allowSetBufferCapacity;
+        deviceConfigAAudio.noSetBufferCapacity     = pDeviceStateAAudio->noSetBufferCapacity;
 
         if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex || deviceType == ma_device_type_loopback) {
             descriptorCapture.pDeviceID           = NULL;   /* Only doing rerouting with default devices. */
@@ -45783,7 +46212,9 @@ static ma_result ma_device_start__aaudio(ma_device* pDevice)
     ma_device_type deviceType = ma_device_get_type(pDevice);
     ma_result result;
 
-    ma_device_state_async_flush(&pDeviceStateAAudio->async);
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+        ma_device_state_async_flush(&pDeviceStateAAudio->async);
+    }
 
     if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex) {
         result = ma_device_start_stream__aaudio(pDevice, pDeviceStateAAudio->pStreamCapture);
@@ -45793,8 +46224,10 @@ static ma_result ma_device_start__aaudio(ma_device* pDevice)
     }
 
     if (deviceType == ma_device_type_playback || deviceType == ma_device_type_duplex) {
-        /* Do an initial step to get the buffer ready in preparation for the first callback instantiation. */
-        ma_device_step__aaudio(pDevice, MA_BLOCKING_MODE_NON_BLOCKING);
+        if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+            /* Prepare the async buffer before starting playback. */
+            ma_device_step__aaudio(pDevice, MA_BLOCKING_MODE_NON_BLOCKING);
+        }
 
         result = ma_device_start_stream__aaudio(pDevice, pDeviceStateAAudio->pStreamPlayback);
         if (result != MA_SUCCESS) {
@@ -45863,7 +46296,32 @@ static ma_result ma_device_step_extra__aaudio(ma_device* pDevice)
 static ma_result ma_device_step__aaudio(ma_device* pDevice, ma_blocking_mode blockingMode)
 {
     ma_device_state_aaudio* pDeviceStateAAudio = ma_device_get_backend_state__aaudio(pDevice);
-    return ma_device_state_async_step(&pDeviceStateAAudio->async, pDevice, blockingMode, ma_device_step_extra__aaudio);
+
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+        return ma_device_state_async_step(&pDeviceStateAAudio->async, pDevice, blockingMode, ma_device_step_extra__aaudio);
+    } else {
+        /* Audio is processed by AAudio. Wait here for a reroute, stop, or uninit request. */
+        if (blockingMode == MA_BLOCKING_MODE_BLOCKING) {
+            ma_semaphore_wait(&pDeviceStateAAudio->stepSemaphore);
+        }
+
+        if (!ma_device_is_started(pDevice)) {
+            return MA_DEVICE_NOT_STARTED;
+        }
+
+        return ma_device_step_extra__aaudio(pDevice);
+    }
+}
+
+static void ma_device_wakeup__aaudio(ma_device* pDevice)
+{
+    ma_device_state_aaudio* pDeviceStateAAudio = ma_device_get_backend_state__aaudio(pDevice);
+
+    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+        ma_device_state_async_release(&pDeviceStateAAudio->async);
+    } else {
+        ma_semaphore_release(&pDeviceStateAAudio->stepSemaphore);
+    }
 }
 
 static ma_device_backend_vtable ma_gDeviceBackendVTable_AAudio =
@@ -45877,7 +46335,7 @@ static ma_device_backend_vtable ma_gDeviceBackendVTable_AAudio =
     ma_device_start__aaudio,
     ma_device_stop__aaudio,
     ma_device_step__aaudio,
-    NULL    /* onDeviceWakeup */
+    ma_device_wakeup__aaudio
 };
 
 ma_device_backend_vtable* ma_device_backend_aaudio = &ma_gDeviceBackendVTable_AAudio;
@@ -47245,16 +47703,26 @@ typedef struct ma_context_state_webaudio
     int _unused;
 } ma_context_state_webaudio;
 
+#if defined(MA_USE_AUDIO_WORKLETS)
+typedef struct
+{
+    ma_uint32 state;    /* Bit 0 is set while a callback uses the device. Bit 1 prevents new device access. */
+    ma_device* pDevice;
+    struct ma_device_state_webaudio* pDeviceStateWebAudio;
+} ma_webaudio_callback_data;
+#endif
+
 typedef struct ma_device_state_webaudio
 {
     ma_device_state_async async;    /* Only used in single-threaded mode. Multi-threaded mode does everything straight from the Web Audio processing callback. */
     #if defined(MA_USE_AUDIO_WORKLETS)
     EMSCRIPTEN_WEBAUDIO_T audioContext;
     EMSCRIPTEN_WEBAUDIO_T audioWorklet;
+    ma_webaudio_callback_data* pCallbackData;
     #endif
     float* pIntermediaryBuffer;
-    void* pStackBuffer;
     ma_result initResult;   /* Set to MA_BUSY while initialization is in progress. */
+    ma_bool32 isAsyncInitialized;
     int deviceIndex;        /* We store the device in a list on the JavaScript side. This is used to map our C object to the JS object. */
 } ma_device_state_webaudio;
 
@@ -47301,6 +47769,23 @@ void EMSCRIPTEN_KEEPALIVE ma_free_emscripten(void* p, const ma_allocation_callba
 {
     ma_free(p, pAllocationCallbacks);
 }
+
+#if defined(MA_USE_AUDIO_WORKLETS)
+EMSCRIPTEN_WEBAUDIO_T EMSCRIPTEN_KEEPALIVE ma_webaudio_create_audio_context_emscripten(const EmscriptenWebAudioCreateAttributes* pOptions)
+{
+    return emscripten_create_audio_context(pOptions);
+}
+
+void EMSCRIPTEN_KEEPALIVE ma_webaudio_create_worklet_processor_emscripten(EMSCRIPTEN_WEBAUDIO_T audioContext, const WebAudioWorkletProcessorCreateOptions* pOptions, EmscriptenWorkletProcessorCreatedCallback callback, void* pUserData)
+{
+    emscripten_create_wasm_audio_worklet_processor_async(audioContext, pOptions, callback, pUserData);
+}
+
+EMSCRIPTEN_WEBAUDIO_T EMSCRIPTEN_KEEPALIVE ma_webaudio_create_worklet_node_emscripten(EMSCRIPTEN_WEBAUDIO_T audioContext, const char* pName, const EmscriptenAudioWorkletNodeCreateOptions* pOptions, EmscriptenWorkletNodeProcessCallback callback, void* pUserData)
+{
+    return emscripten_create_wasm_audio_worklet_node(audioContext, pName, pOptions, callback, pUserData);
+}
+#endif
 
 void EMSCRIPTEN_KEEPALIVE ma_device_process_pcm_frames_capture__webaudio(ma_device* pDevice, int frameCount, float* pFrames)
 {
@@ -47426,10 +47911,12 @@ static ma_result ma_context_init__webaudio(ma_context* pContext, const void* pCo
 
             miniaudio.unlock = function() {
                 for(var i = 0; i < miniaudio.devices.length; ++i) {
-                    var device = miniaudio.devices[i];
+                    let device = miniaudio.devices[i];
                     if (device != null && device.webaudio != null && device.state === miniaudio.device_status.started) {
                         device.webaudio.resume().then(() => {
-                            _ma_device_post_notification_unlocked_emscripten(device.pDevice);
+                            if (!device.closed && device.pDevice) {
+                                _ma_device_post_notification_unlocked_emscripten(device.pDevice);
+                            }
                         },
                         (error) => {console.error("Failed to resume audiocontext", error);
                         });
@@ -47590,49 +48077,71 @@ static ma_uint32 ma_calculate_period_size_in_frames_from_descriptor__webaudio(co
 
 
 #if defined(MA_USE_AUDIO_WORKLETS)
-typedef struct
+/* The audio thread must never wait for the main browser thread. */
+static ma_device* ma_webaudio_callback_acquire(ma_webaudio_callback_data* pCallbackData)
 {
-    ma_device* pDevice;
-    ma_device_state_webaudio* pDeviceStateWebAudio;
-    ma_device_descriptor descriptorPlayback;
-    ma_device_descriptor descriptorCapture;
-} ma_audio_worklet_thread_initialized_data;
+    if (ma_atomic_compare_and_swap_32(&pCallbackData->state, 0, 1) != 0) {
+        return NULL;
+    }
 
-static EM_BOOL ma_audio_worklet_process_callback__webaudio(int inputCount, const AudioSampleFrame* pInputs, int outputCount, AudioSampleFrame* pOutputs, int paramCount, const AudioParamFrame* pParams, void* pUserData)
+    return pCallbackData->pDevice;
+}
+
+static void ma_webaudio_callback_release(ma_webaudio_callback_data* pCallbackData, ma_device* pDevice)
 {
-    ma_device* pDevice = (ma_device*)pUserData;
-    ma_device_state_webaudio* pDeviceStateWebAudio = ma_device_get_backend_state__webaudio(pDevice);
-    ma_device_type deviceType = ma_device_get_type(pDevice);
+    /* A failed acquisition must not release another callback's device access. */
+    if (pDevice == NULL) {
+        return;
+    }
+
+    ma_atomic_fetch_and_32(&pCallbackData->state, ~((ma_uint32)1));
+}
+
+static void ma_webaudio_callback_close(ma_webaudio_callback_data* pCallbackData)
+{
+    ma_atomic_fetch_or_32(&pCallbackData->state, 2);
+
+    /* Wait only for a callback already using the device, never for a browser promise or future callback. */
+    while ((ma_atomic_load_32(&pCallbackData->state) & 1) != 0) {
+        ma_yield();
+    }
+
+    pCallbackData->pDevice = NULL;
+    pCallbackData->pDeviceStateWebAudio = NULL;
+}
+
+/* Internal helpers must not access device state when pDevice is NULL. */
+static EM_BOOL ma_audio_worklet_process_callback_internal__webaudio(int inputCount, const AudioSampleFrame* pInputs, int outputCount, AudioSampleFrame* pOutputs, int paramCount, const AudioParamFrame* pParams, ma_device* pDevice)
+{
+    ma_device_state_webaudio* pDeviceStateWebAudio;
+    ma_device_type deviceType;
     ma_uint32 frameCount;
 
     (void)paramCount;
     (void)pParams;
 
-    /*
-    The Emscripten documentation says that it'll always be 128 frames being passed in. Hard coding it like that feels
-    like a very bad idea to me. Even if it's hard coded in the backend, the API and documentation should always refer
-    to variables instead of a hard coded number. In any case, will follow along for the time being.
+    if (pDevice == NULL) {
+        for (int i = 0; i < outputCount; i += 1) {
+            MA_ZERO_MEMORY(pOutputs[i].data, pOutputs[i].numberOfChannels * pOutputs[i].samplesPerChannel * sizeof(float));
+        }
 
-    Unfortunately the audio data is not interleaved so we'll need to convert it before we give the data to miniaudio
-    for further processing.
-
-    NOTE: Do not use the internal period size for this. A value of 128 is way too small for web and as such miniaudio
-    uses a larger (approximate) value for that. The frame count here must be exactly what Web Audio expects (128 as
-    of now).
-    */
-    if (deviceType == ma_device_type_playback) {
-        frameCount = 128;
-    } else {
-        frameCount = 128;
+        return EM_TRUE;
     }
 
-    /*
-    If this is called by the device has not yet been started we need to return early, making sure we output silence to
-    the output buffer.
-    */
+    pDeviceStateWebAudio = ma_device_get_backend_state__webaudio(pDevice);
+    deviceType = ma_device_get_type(pDevice);
+
+    if (outputCount > 0) {
+        frameCount = (ma_uint32)pOutputs[0].samplesPerChannel;
+    } else if (inputCount > 0) {
+        frameCount = (ma_uint32)pInputs[0].samplesPerChannel;
+    } else {
+        return EM_TRUE;
+    }
+
     if (ma_device_get_status(pDevice) != ma_device_status_started) {
         for (int i = 0; i < outputCount; i += 1) {
-            MA_ZERO_MEMORY(pOutputs[i].data, pOutputs[i].numberOfChannels * frameCount * sizeof(float));
+            MA_ZERO_MEMORY(pOutputs[i].data, pOutputs[i].numberOfChannels * pOutputs[i].samplesPerChannel * sizeof(float));
         }
 
         return EM_TRUE;
@@ -47678,18 +48187,42 @@ static EM_BOOL ma_audio_worklet_process_callback__webaudio(int inputCount, const
     return EM_TRUE;
 }
 
-
-static void ma_audio_worklet_processor_created__webaudio(EMSCRIPTEN_WEBAUDIO_T audioContext, EM_BOOL success, void* pUserData)
+static EM_BOOL ma_audio_worklet_process_callback__webaudio(int inputCount, const AudioSampleFrame* pInputs, int outputCount, AudioSampleFrame* pOutputs, int paramCount, const AudioParamFrame* pParams, void* pUserData)
 {
-    ma_audio_worklet_thread_initialized_data* pParameters = (ma_audio_worklet_thread_initialized_data*)pUserData;
-    ma_device_type deviceType = ma_device_get_type(pParameters->pDevice);
+    ma_webaudio_callback_data* pCallbackData = (ma_webaudio_callback_data*)pUserData;
+    ma_device* pDevice;
+    EM_BOOL result;
+
+    pDevice = ma_webaudio_callback_acquire(pCallbackData);
+    {
+        result = ma_audio_worklet_process_callback_internal__webaudio(inputCount, pInputs, outputCount, pOutputs, paramCount, pParams, pDevice);
+    }
+    ma_webaudio_callback_release(pCallbackData, pDevice);
+
+    /* A busy startup callback must not stop the processor, but closure must stop it. */
+    if ((ma_atomic_load_32(&pCallbackData->state) & 2) != 0) {
+        return EM_FALSE;
+    }
+
+    return result;
+}
+
+static void ma_audio_worklet_processor_created_internal__webaudio(EMSCRIPTEN_WEBAUDIO_T audioContext, EM_BOOL success, ma_device* pDevice, ma_webaudio_callback_data* pCallbackData)
+{
+    ma_device_state_webaudio* pDeviceStateWebAudio;
+    ma_device_type deviceType;
     EmscriptenAudioWorkletNodeCreateOptions audioWorkletOptions;
     int channels = 0;
-    size_t intermediaryBufferSizeInFrames;
+
+    if (pDevice == NULL) {
+        return;
+    }
+
+    pDeviceStateWebAudio = pCallbackData->pDeviceStateWebAudio;
+    deviceType = ma_device_get_type(pDevice);
 
     if (success == EM_FALSE) {
-        pParameters->pDeviceStateWebAudio->initResult = MA_ERROR;
-        ma_free(pParameters, ma_device_get_allocation_callbacks(pParameters->pDevice));
+        pDeviceStateWebAudio->initResult = MA_ERROR;
         return;
     }
 
@@ -47704,12 +48237,14 @@ static void ma_audio_worklet_processor_created__webaudio(EMSCRIPTEN_WEBAUDIO_T a
     proper control over the channel count. In the capture case, we'll have to output silence to its output node.
     */
     if (deviceType == ma_device_type_capture || deviceType == ma_device_type_loopback) {
-        MA_ASSERT(pParameters->descriptorCapture.channels > 0);   /* Should have been initialized to a valid value earlier. */
-        channels = (int)pParameters->descriptorCapture.channels;
+        MA_ASSERT(ma_device_get_internal_channels(pDevice, ma_device_type_capture) > 0);   /* Should have been initialized to a valid value earlier. */
+
+        channels = (int)ma_device_get_internal_channels(pDevice, ma_device_type_capture);
         audioWorkletOptions.numberOfInputs = 1;
     } else {
-        MA_ASSERT(pParameters->descriptorPlayback.channels > 0);   /* Should have been initialized to a valid value earlier. */
-        channels = (int)pParameters->descriptorPlayback.channels;
+        MA_ASSERT(ma_device_get_internal_channels(pDevice, ma_device_type_playback) > 0);   /* Should have been initialized to a valid value earlier. */
+
+        channels = (int)ma_device_get_internal_channels(pDevice, ma_device_type_playback);
 
         if (deviceType == ma_device_type_duplex) {
             audioWorkletOptions.numberOfInputs = 1;
@@ -47721,77 +48256,83 @@ static void ma_audio_worklet_processor_created__webaudio(EMSCRIPTEN_WEBAUDIO_T a
     audioWorkletOptions.numberOfOutputs = 1;
     audioWorkletOptions.outputChannelCounts = &channels;
 
+    pDeviceStateWebAudio->audioWorklet = EM_ASM_INT({
+        try {
+            return _ma_webaudio_create_worklet_node_emscripten($0, $1, $2, $3, $4);
+        } catch (error) {
+            return 0;
+        }
+    }, audioContext, "miniaudio", &audioWorkletOptions, &ma_audio_worklet_process_callback__webaudio, pCallbackData);
 
-    /*
-    Now that we know the channel count to use we can allocate the intermediary buffer. The
-    intermediary buffer is used for interleaving and deinterleaving.
-    */
-    #if defined(MA_SUPPORT_AUDIO_WORKLETS_VARIABLE_BUFFER_SIZE)
-    {
-        intermediaryBufferSizeInFrames = (size_t)emscripten_audio_context_quantum_size(audioContext);
-    }
-    #else
-    {
-        intermediaryBufferSizeInFrames = 128;
-    }
-    #endif
-
-    pParameters->pDeviceStateWebAudio->pIntermediaryBuffer = (float*)ma_malloc(intermediaryBufferSizeInFrames * (ma_uint32)channels * sizeof(float), &pParameters->pDevice->pContext->allocationCallbacks);
-    if (pParameters->pDeviceStateWebAudio->pIntermediaryBuffer == NULL) {
-        pParameters->pDeviceStateWebAudio->initResult = MA_OUT_OF_MEMORY;
-        ma_free(pParameters, &pParameters->pDevice->pContext->allocationCallbacks);
+    if (pDeviceStateWebAudio->audioWorklet == 0) {
+        pDeviceStateWebAudio->initResult = MA_ERROR;
         return;
     }
-
-    pParameters->pDeviceStateWebAudio->audioWorklet = emscripten_create_wasm_audio_worklet_node(audioContext, "miniaudio", &audioWorkletOptions, &ma_audio_worklet_process_callback__webaudio, pParameters->pDevice);
 
     /* With the audio worklet initialized we can now attach it to the graph. */
     if (deviceType == ma_device_type_capture || deviceType == ma_device_type_duplex || deviceType == ma_device_type_loopback) {
         ma_result attachmentResult = (ma_result)EM_ASM_INT({
             var getMediaResult = 0;
+            var device = window.miniaudio.get_device_by_index($3);
             var audioWorklet = emscriptenGetAudioObject($0);
             var audioContext = emscriptenGetAudioObject($1);
             var deviceType   = $2;
 
-            if (deviceType == window.miniaudio.device_type.loopback) {
-                if (navigator.mediaDevices.getDisplayMedia === 'undefined') {
-                    console.log("navigator.mediaDevices.getDisplayMedia undefined. Cannot use loopback mode.");
-                    getMediaResult = -1;
+            try {
+                if (deviceType == window.miniaudio.device_type.loopback) {
+                    if (typeof navigator.mediaDevices.getDisplayMedia === 'undefined') {
+                        console.log("navigator.mediaDevices.getDisplayMedia undefined. Cannot use loopback mode.");
+                        getMediaResult = -1;
+                    } else {
+                        navigator.mediaDevices.getDisplayMedia({audio:true, video:true})
+                            .then(function(stream) {
+                                if (device.closed) {
+                                    stream.getTracks().forEach(function(track) { track.stop(); });
+                                    return;
+                                }
+
+                                device.stream = stream;
+                                device.streamNode = audioContext.createMediaStreamSource(stream);
+                                device.streamNode.connect(audioWorklet);
+                                audioWorklet.connect(audioContext.destination);
+                                getMediaResult = 0;   /* 0 = MA_SUCCESS */
+                            })
+                            .catch(function(error) {
+                                console.log("navigator.mediaDevices.getDisplayMedia Failed: " + error);
+                                getMediaResult = -1;  /* -1 = MA_ERROR */
+                            });
+                    }
                 } else {
-                    navigator.mediaDevices.getDisplayMedia({audio:true, video:true})
+                    navigator.mediaDevices.getUserMedia({audio:true, video:false})
                         .then(function(stream) {
-                            audioContext.streamNode = audioContext.createMediaStreamSource(stream);
-                            audioContext.streamNode.connect(audioWorklet);
+                            if (device.closed) {
+                                stream.getTracks().forEach(function(track) { track.stop(); });
+                                return;
+                            }
+
+                            device.stream = stream;
+                            device.streamNode = audioContext.createMediaStreamSource(stream);
+                            device.streamNode.connect(audioWorklet);
                             audioWorklet.connect(audioContext.destination);
                             getMediaResult = 0;   /* 0 = MA_SUCCESS */
                         })
                         .catch(function(error) {
-                            console.log("navigator.mediaDevices.getDisplayMedia Failed: " + error);
+                            console.log("navigator.mediaDevices.getUserMedia Failed: " + error);
                             getMediaResult = -1;  /* -1 = MA_ERROR */
                         });
                 }
-            } else {
-                navigator.mediaDevices.getUserMedia({audio:true, video:false})
-                    .then(function(stream) {
-                        audioContext.streamNode = audioContext.createMediaStreamSource(stream);
-                        audioContext.streamNode.connect(audioWorklet);
-                        audioWorklet.connect(audioContext.destination);
-                        getMediaResult = 0;   /* 0 = MA_SUCCESS */
-                    })
-                    .catch(function(error) {
-                        console.log("navigator.mediaDevices.getUserMedia Failed: " + error);
-                        getMediaResult = -1;  /* -1 = MA_ERROR */
-                    });
+            } catch (error) {
+                getMediaResult = -1;
             }
 
             return getMediaResult;
-        }, pParameters->pDeviceStateWebAudio->audioWorklet, audioContext, deviceType);
+        }, pDeviceStateWebAudio->audioWorklet, audioContext, deviceType, pDeviceStateWebAudio->deviceIndex);
 
         if (attachmentResult != MA_SUCCESS) {
-            ma_log_postf(ma_device_get_log(pParameters->pDevice), MA_LOG_LEVEL_ERROR, "Web Audio: Failed to connect capture node.");
-            emscripten_destroy_web_audio_node(pParameters->pDeviceStateWebAudio->audioWorklet);
-            pParameters->pDeviceStateWebAudio->initResult = attachmentResult;
-            ma_free(pParameters, &pParameters->pDevice->pContext->allocationCallbacks);
+            ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "Web Audio: Failed to connect capture node.");
+            emscripten_destroy_web_audio_node(pDeviceStateWebAudio->audioWorklet);
+            pDeviceStateWebAudio->audioWorklet = 0;
+            pDeviceStateWebAudio->initResult = attachmentResult;
             return;
         }
     }
@@ -47801,48 +48342,83 @@ static void ma_audio_worklet_processor_created__webaudio(EMSCRIPTEN_WEBAUDIO_T a
         ma_result attachmentResult = (ma_result)EM_ASM_INT({
             var audioWorklet = emscriptenGetAudioObject($0);
             var audioContext = emscriptenGetAudioObject($1);
-            audioWorklet.connect(audioContext.destination);
-            return 0;   /* 0 = MA_SUCCESS */
-        }, pParameters->pDeviceStateWebAudio->audioWorklet, audioContext);
+            try {
+                audioWorklet.connect(audioContext.destination);
+                return 0;   /* 0 = MA_SUCCESS */
+            } catch (error) {
+                return -1;  /* -1 = MA_ERROR */
+            }
+        }, pDeviceStateWebAudio->audioWorklet, audioContext);
 
         if (attachmentResult != MA_SUCCESS) {
-            ma_log_postf(ma_device_get_log(pParameters->pDevice), MA_LOG_LEVEL_ERROR, "Web Audio: Failed to connect playback node.");
-            pParameters->pDeviceStateWebAudio->initResult = attachmentResult;
-            ma_free(pParameters, &pParameters->pDevice->pContext->allocationCallbacks);
+            ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_ERROR, "Web Audio: Failed to connect playback node.");
+            pDeviceStateWebAudio->initResult = attachmentResult;
             return;
         }
     }
 
-    
-
     /* At this point we're done and we can return. */
-    ma_log_postf(ma_device_get_log(pParameters->pDevice), MA_LOG_LEVEL_DEBUG, "AudioWorklets: Created worklet node: %d", pParameters->pDeviceStateWebAudio->audioWorklet);
-    pParameters->pDeviceStateWebAudio->initResult = MA_SUCCESS;
-    ma_free(pParameters, &pParameters->pDevice->pContext->allocationCallbacks);
+    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "AudioWorklets: Created worklet node: %d", pDeviceStateWebAudio->audioWorklet);
+    pDeviceStateWebAudio->initResult = MA_SUCCESS;
 }
 
-static void ma_audio_worklet_thread_initialized__webaudio(EMSCRIPTEN_WEBAUDIO_T audioContext, EM_BOOL success, void* pUserData)
+static void ma_audio_worklet_processor_created__webaudio(EMSCRIPTEN_WEBAUDIO_T audioContext, EM_BOOL success, void* pUserData)
 {
-    ma_audio_worklet_thread_initialized_data* pParameters = (ma_audio_worklet_thread_initialized_data*)pUserData;
+    ma_webaudio_callback_data* pCallbackData = (ma_webaudio_callback_data*)pUserData;
+    ma_device* pDevice;
+
+    pDevice = ma_webaudio_callback_acquire(pCallbackData);
+    {
+        ma_audio_worklet_processor_created_internal__webaudio(audioContext, success, pDevice, pCallbackData);
+    }
+    ma_webaudio_callback_release(pCallbackData, pDevice);
+}
+
+static void ma_audio_worklet_thread_initialized_internal__webaudio(EMSCRIPTEN_WEBAUDIO_T audioContext, EM_BOOL success, ma_device* pDevice, ma_webaudio_callback_data* pCallbackData)
+{
+    ma_device_state_webaudio* pDeviceStateWebAudio;
     WebAudioWorkletProcessorCreateOptions workletProcessorOptions;
 
-    MA_ASSERT(pParameters != NULL);
+    if (pDevice == NULL) {
+        return;
+    }
 
+    pDeviceStateWebAudio = pCallbackData->pDeviceStateWebAudio;
     if (success == EM_FALSE) {
-        ma_device_state_webaudio* pDeviceStateWebAudio;
-
-        pDeviceStateWebAudio = pParameters->pDeviceStateWebAudio;
-        ma_free(pParameters, ma_device_get_allocation_callbacks(pParameters->pDevice));
         pDeviceStateWebAudio->initResult = MA_ERROR;
         return;
     }
 
     MA_ZERO_OBJECT(&workletProcessorOptions);
-    workletProcessorOptions.name = "miniaudio"; /* I'm not entirely sure what to call this. Does this need to be globally unique, or does it need only be unique for a given AudioContext? */
+    workletProcessorOptions.name = "miniaudio";
 
-    emscripten_create_wasm_audio_worklet_processor_async(audioContext, &workletProcessorOptions, ma_audio_worklet_processor_created__webaudio, pParameters);
+    if (EM_ASM_INT({
+        try {
+            _ma_webaudio_create_worklet_processor_emscripten($0, $1, $2, $3);
+            return 1;
+        } catch (error) {
+            return 0;
+        }
+    }, audioContext, &workletProcessorOptions, &ma_audio_worklet_processor_created__webaudio, pCallbackData) == 0) {
+        pDeviceStateWebAudio->initResult = MA_ERROR;
+    }
 }
+
+static void ma_audio_worklet_thread_initialized__webaudio(EMSCRIPTEN_WEBAUDIO_T audioContext, EM_BOOL success, void* pUserData)
+{
+    ma_webaudio_callback_data* pCallbackData = (ma_webaudio_callback_data*)pUserData;
+    ma_device* pDevice;
+
+    pDevice = ma_webaudio_callback_acquire(pCallbackData);
+    {
+        ma_audio_worklet_thread_initialized_internal__webaudio(audioContext, success, pDevice, pCallbackData);
+    }
+    ma_webaudio_callback_release(pCallbackData, pDevice);
+}
+
 #endif
+
+static void ma_device_state_uninit__webaudio(ma_device* pDevice, ma_device_state_webaudio* pDeviceStateWebAudio);
 
 static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDeviceBackendConfig, ma_device_descriptor* pDescriptorPlayback, ma_device_descriptor* pDescriptorCapture, void** ppDeviceState)
 {
@@ -47874,8 +48450,8 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
     #if defined(MA_USE_AUDIO_WORKLETS)
     {
         EmscriptenWebAudioCreateAttributes audioContextAttributes;
-        ma_audio_worklet_thread_initialized_data* pInitParameters;
-        void* pStackBuffer;
+        ma_result result = MA_OUT_OF_MEMORY;
+        void* pStackBuffer = NULL;
 
         MA_ZERO_OBJECT(&audioContextAttributes);
         /*  */ if (pDeviceConfigWebAudio->latencyHint == ma_webaudio_latency_hint_interactive) {
@@ -47900,8 +48476,18 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
             audioContextAttributes.sampleRate = 0;
         }
 
-        /* It's not clear if this can return an error. None of the tests in the Emscripten repository check for this, so neither am I for now. */
-        pDeviceStateWebAudio->audioContext = emscripten_create_audio_context(&audioContextAttributes);
+        pDeviceStateWebAudio->audioContext = EM_ASM_INT({
+            try {
+                return _ma_webaudio_create_audio_context_emscripten($0);
+            } catch (error) {
+                return 0;
+            }
+        }, &audioContextAttributes);
+
+        if (pDeviceStateWebAudio->audioContext == 0) {
+            ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
+            return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
+        }
 
         /*
         With the context created we can now create the worklet. We can only have a single worklet per audio
@@ -47913,11 +48499,10 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
         own buffer for the thread's stack. The stack needs to be aligned to 16 bytes. I'm going to
         allocate this on the heap to keep it simple.
         */
-        pStackBuffer = ma_aligned_malloc(MA_AUDIO_WORKLETS_THREAD_STACK_SIZE, 16, ma_device_get_allocation_callbacks(pDevice));
+        /* This retained storage must not depend on the lifetime of a custom allocator's user data. */
+        pStackBuffer = ma_aligned_malloc(MA_AUDIO_WORKLETS_THREAD_STACK_SIZE, 16, NULL);
         if (pStackBuffer == NULL) {
-            emscripten_destroy_audio_context(pDeviceStateWebAudio->audioContext);
-            ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
-            return MA_OUT_OF_MEMORY;
+            goto on_error_worklet;
         }
 
         /*
@@ -47958,6 +48543,11 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
             }
             #endif
 
+            pDeviceStateWebAudio->pIntermediaryBuffer = (float*)ma_malloc(periodSizeInFrames * channels * sizeof(float), ma_device_get_allocation_callbacks(pDevice));
+            if (pDeviceStateWebAudio->pIntermediaryBuffer == NULL) {
+                goto on_error_worklet;
+            }
+
             if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
                 if (pDescriptorCapture != NULL) {
                     if (periodSizeInFrames < pDescriptorCapture->periodSizeInFrames) {
@@ -47997,27 +48587,23 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
         }
 
         if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
-            ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateWebAudio->async);
+            result = ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateWebAudio->async);
+            if (result != MA_SUCCESS) {
+                goto on_error_worklet;
+            }
+
+            pDeviceStateWebAudio->isAsyncInitialized = MA_TRUE;
         }
 
-        /* Our thread initialization parameters need to be allocated on the heap so they don't go out of scope. */
-        pInitParameters = (ma_audio_worklet_thread_initialized_data*)ma_calloc(sizeof(*pInitParameters), ma_device_get_allocation_callbacks(pDevice));
-        if (pInitParameters == NULL) {
-            ma_aligned_free(pStackBuffer, ma_device_get_allocation_callbacks(pDevice));
-            emscripten_destroy_audio_context(pDeviceStateWebAudio->audioContext);
-            ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
-            return MA_OUT_OF_MEMORY;
+        pDeviceStateWebAudio->pCallbackData = (ma_webaudio_callback_data*)ma_calloc(sizeof(*pDeviceStateWebAudio->pCallbackData), NULL);
+        if (pDeviceStateWebAudio->pCallbackData == NULL) {
+            result = MA_OUT_OF_MEMORY;
+            goto on_error_worklet;
         }
 
-        pInitParameters->pDevice              = pDevice;
-        pInitParameters->pDeviceStateWebAudio = pDeviceStateWebAudio;
-
-        if (pDescriptorPlayback != NULL) {
-            pInitParameters->descriptorPlayback = *pDescriptorPlayback;
-        }
-        if (pDescriptorCapture != NULL) {
-            pInitParameters->descriptorCapture  = *pDescriptorCapture;
-        }
+        pDeviceStateWebAudio->pCallbackData->pDevice = pDevice;
+        pDeviceStateWebAudio->pCallbackData->pDeviceStateWebAudio = pDeviceStateWebAudio;
+        pDeviceStateWebAudio->initResult = MA_BUSY;
 
         /* We need to add an entry to the miniaudio.devices list on the JS side so we can do some JS/C interop. */
         pDeviceStateWebAudio->deviceIndex = EM_ASM_INT({
@@ -48029,19 +48615,38 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
         }, pDeviceStateWebAudio->audioContext, (ma_uintptr)pDevice);
 
         /*
-        We now have enough to initialize the audio worklet. This is asynchronous. Waiting for it to complete will
-        require a call to emscripten_sleep() which in turn requires building with `-sASYNCIFY`. We're just going
-        to not wait for it and just assume it was successful. Audio should resume once it's all up and running.
-
-        Web Audio teardown does not wait for all stack users to stop. Retain this allocation after
-        handing it to Emscripten, including when initialization fails.
+        Startup is asynchronous and does not require Asyncify. Once handed to Emscripten, retain the
+        stack and callback record, including on later startup failures. Emscripten cannot guarantee
+        that no more callbacks or stack accesses will occur after disconnecting a node. The default
+        retained cost is 128 KiB per stack, plus the callback record and allocation overhead.
         */
-        emscripten_start_wasm_audio_worklet_thread_async(pDeviceStateWebAudio->audioContext, pStackBuffer, MA_AUDIO_WORKLETS_THREAD_STACK_SIZE, ma_audio_worklet_thread_initialized__webaudio, pInitParameters);
+        emscripten_start_wasm_audio_worklet_thread_async(pDeviceStateWebAudio->audioContext, pStackBuffer, MA_AUDIO_WORKLETS_THREAD_STACK_SIZE, ma_audio_worklet_thread_initialized__webaudio, pDeviceStateWebAudio->pCallbackData);
+        *ppDeviceState = pDeviceStateWebAudio;
+        return MA_SUCCESS;
+
+    on_error_worklet:
+        if (pStackBuffer != NULL) {
+            ma_aligned_free(pStackBuffer, NULL);
+        }
+
+        if (pDeviceStateWebAudio->isAsyncInitialized) {
+            ma_device_state_async_uninit(&pDeviceStateWebAudio->async, ma_device_get_allocation_callbacks(pDevice));
+        }
+
+        ma_free(pDeviceStateWebAudio->pCallbackData, NULL);
+        ma_free(pDeviceStateWebAudio->pIntermediaryBuffer, ma_device_get_allocation_callbacks(pDevice));
+        EM_ASM({
+            var audioContext = emscriptenGetAudioObject($0);
+            Promise.resolve().then(function() { return audioContext.close(); }).catch(function() {});
+        }, pDeviceStateWebAudio->audioContext);
+        emscripten_destroy_audio_context(pDeviceStateWebAudio->audioContext);
+        ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
+        return result;
     }
     #else
     {
         /* ScriptProcessorNode. This path requires us to do almost everything in JS, but we'll do as much as we can in C. */
-        ma_uint32 deviceIndex;
+        int deviceIndex;
         ma_uint32 channels;
         ma_uint32 sampleRate;
         ma_uint32 periodSizeInFrames;
@@ -48073,6 +48678,7 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
         /* We need an intermediary buffer for doing interleaving and deinterleaving. */
         pDeviceStateWebAudio->pIntermediaryBuffer = (float*)ma_malloc(periodSizeInFrames * channels * sizeof(float), ma_device_get_allocation_callbacks(pDevice));
         if (pDeviceStateWebAudio->pIntermediaryBuffer == NULL) {
+            ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
             return MA_OUT_OF_MEMORY;
         }
 
@@ -48090,107 +48696,137 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
 
             var device = {};
 
-            /* First thing we need is an AudioContext. */
-            var audioContextOptions = {};
-            if (deviceType == window.miniaudio.device_type.playback && sampleRate != 0) {
-                audioContextOptions.sampleRate = sampleRate;
-            }
+            try {
 
-            device.webaudio = new (window.AudioContext || window.webkitAudioContext)(audioContextOptions);
-            device.webaudio.suspend();  /* The AudioContext must be created in a suspended state. */
-            device.state = window.miniaudio.device_status.stopped;
-
-            /*
-            We need to create a ScriptProcessorNode. The channel situation is the same as the AudioWorklet path in that we
-            need to specify an output and configure the channel count there.
-            */
-            var channelCountIn  = 0;
-            var channelCountOut = channels;
-            if (deviceType != window.miniaudio.device_type.playback) {
-                channelCountIn  = channels;
-            }
-
-            device.scriptNode = device.webaudio.createScriptProcessor(bufferSize, channelCountIn, channelCountOut);
-
-            /* The node processing callback. */
-            device.scriptNode.onaudioprocess = function(e) {
-                if (device.intermediaryBufferView == null || device.intermediaryBufferView.length == 0 || device.intermediaryBufferView.buffer !== HEAPF32.buffer) {
-                    device.intermediaryBufferView = new Float32Array(HEAPF32.buffer, Number(pIntermediaryBuffer), bufferSize * channels);
+                /* First thing we need is an AudioContext. */
+                var audioContextOptions = {};
+                if (deviceType == window.miniaudio.device_type.playback && sampleRate != 0) {
+                    audioContextOptions.sampleRate = sampleRate;
                 }
 
-                /* Do the capture side first. */
+                device.webaudio = new (window.AudioContext || window.webkitAudioContext)(audioContextOptions);
+                device.webaudio.suspend();  /* The AudioContext must be created in a suspended state. */
+                device.state = window.miniaudio.device_status.stopped;
+
+                /*
+                We need to create a ScriptProcessorNode. The channel situation is the same as the AudioWorklet path in that we
+                need to specify an output and configure the channel count there.
+                */
+                var channelCountIn  = 0;
+                var channelCountOut = channels;
+                if (deviceType != window.miniaudio.device_type.playback) {
+                    channelCountIn  = channels;
+                }
+
+                device.scriptNode = device.webaudio.createScriptProcessor(bufferSize, channelCountIn, channelCountOut);
+
+                /* The node processing callback. */
+                device.scriptNode.onaudioprocess = function(e) {
+                    if (device.closed) {
+                        return;
+                    }
+
+                    if (device.intermediaryBufferView == null || device.intermediaryBufferView.length == 0 || device.intermediaryBufferView.buffer !== HEAPF32.buffer) {
+                        device.intermediaryBufferView = new Float32Array(HEAPF32.buffer, Number(pIntermediaryBuffer), bufferSize * channels);
+                    }
+
+                    /* Do the capture side first. */
+                    if (deviceType == window.miniaudio.device_type.capture || deviceType == window.miniaudio.device_type.duplex) {
+                        /* The data must be interleaved before being processed miniaudio. */
+                        for (var iChannel = 0; iChannel < channels; iChannel += 1) {
+                            var inputBuffer = e.inputBuffer.getChannelData(iChannel);
+                            var intermediaryBuffer = device.intermediaryBufferView;
+
+                            for (var iFrame = 0; iFrame < bufferSize; iFrame += 1) {
+                                intermediaryBuffer[iFrame*channels + iChannel] = inputBuffer[iFrame];
+                            }
+                        }
+
+                        _ma_device_process_pcm_frames_capture__webaudio(pDevice, bufferSize, pIntermediaryBuffer);
+                    }
+
+                    if (deviceType == window.miniaudio.device_type.playback || deviceType == window.miniaudio.device_type.duplex) {
+                        _ma_device_process_pcm_frames_playback__webaudio(pDevice, bufferSize, pIntermediaryBuffer);
+
+                        for (var iChannel = 0; iChannel < e.outputBuffer.numberOfChannels; ++iChannel) {
+                            var outputBuffer = e.outputBuffer.getChannelData(iChannel);
+                            var intermediaryBuffer = device.intermediaryBufferView;
+
+                            for (var iFrame = 0; iFrame < bufferSize; iFrame += 1) {
+                                outputBuffer[iFrame] = intermediaryBuffer[iFrame*channels + iChannel];
+                            }
+                        }
+                    } else {
+                        /* It's a capture-only device. Make sure the output is silenced. */
+                        for (var iChannel = 0; iChannel < e.outputBuffer.numberOfChannels; ++iChannel) {
+                            e.outputBuffer.getChannelData(iChannel).fill(0.0);
+                        }
+                    }
+                };
+
+                /* Now we need to connect our node to the graph. */
                 if (deviceType == window.miniaudio.device_type.capture || deviceType == window.miniaudio.device_type.duplex) {
-                    /* The data must be interleaved before being processed miniaudio. */
-                    for (var iChannel = 0; iChannel < channels; iChannel += 1) {
-                        var inputBuffer = e.inputBuffer.getChannelData(iChannel);
-                        var intermediaryBuffer = device.intermediaryBufferView;
+                    navigator.mediaDevices.getUserMedia({audio:true, video:false})
+                        .then(function(stream) {
+                            if (device.closed) {
+                                stream.getTracks().forEach(function(track) { track.stop(); });
+                                return;
+                            }
 
-                        for (var iFrame = 0; iFrame < bufferSize; iFrame += 1) {
-                            intermediaryBuffer[iFrame*channels + iChannel] = inputBuffer[iFrame];
-                        }
-                    }
-
-                    _ma_device_process_pcm_frames_capture__webaudio(pDevice, bufferSize, pIntermediaryBuffer);
+                            device.stream = stream;
+                            device.streamNode = device.webaudio.createMediaStreamSource(stream);
+                            device.streamNode.connect(device.scriptNode);
+                            device.scriptNode.connect(device.webaudio.destination);
+                        })
+                        .catch(function(error) {
+                            console.log("Failed to get user media: " + error);
+                        });
                 }
 
-                if (deviceType == window.miniaudio.device_type.playback || deviceType == window.miniaudio.device_type.duplex) {
-                    _ma_device_process_pcm_frames_playback__webaudio(pDevice, bufferSize, pIntermediaryBuffer);
-
-                    for (var iChannel = 0; iChannel < e.outputBuffer.numberOfChannels; ++iChannel) {
-                        var outputBuffer = e.outputBuffer.getChannelData(iChannel);
-                        var intermediaryBuffer = device.intermediaryBufferView;
-
-                        for (var iFrame = 0; iFrame < bufferSize; iFrame += 1) {
-                            outputBuffer[iFrame] = intermediaryBuffer[iFrame*channels + iChannel];
-                        }
+                if (deviceType == window.miniaudio.device_type.loopback) {
+                    if (typeof navigator.mediaDevices.getDisplayMedia === 'undefined') {
+                        throw new Error("Display capture is not supported.");
                     }
-                } else {
-                    /* It's a capture-only device. Make sure the output is silenced. */
-                    for (var iChannel = 0; iChannel < e.outputBuffer.numberOfChannels; ++iChannel) {
-                        e.outputBuffer.getChannelData(iChannel).fill(0.0);
-                    }
-                }
-            };
 
-            /* Now we need to connect our node to the graph. */
-            if (deviceType == window.miniaudio.device_type.capture || deviceType == window.miniaudio.device_type.duplex) {
-                navigator.mediaDevices.getUserMedia({audio:true, video:false})
-                    .then(function(stream) {
-                        device.streamNode = device.webaudio.createMediaStreamSource(stream);
-                        device.streamNode.connect(device.scriptNode);
-                        device.scriptNode.connect(device.webaudio.destination);
-                    })
-                    .catch(function(error) {
-                        console.log("Failed to get user media: " + error);
-                    });
-            }
+                    navigator.mediaDevices.getDisplayMedia({audio:true, video:true})
+                        .then(function(stream) {
+                            if (device.closed) {
+                                stream.getTracks().forEach(function(track) { track.stop(); });
+                                return;
+                            }
 
-            if (deviceType == window.miniaudio.device_type.loopback) {
-                if (navigator.mediaDevices.getDisplayMedia === 'undefined') {
-                    return -1;
+                            device.stream = stream;
+                            device.streamNode = device.webaudio.createMediaStreamSource(stream);
+                            device.streamNode.connect(device.scriptNode);
+                            device.scriptNode.connect(device.webaudio.destination);
+                        })
+                        .catch(function(error) {
+                            console.log("Failed to get user media: " + error);
+                        });
                 }
 
-                navigator.mediaDevices.getDisplayMedia({audio:true, video:true})
-                    .then(function(stream) {
-                        device.streamNode = device.webaudio.createMediaStreamSource(stream);
-                        device.streamNode.connect(device.scriptNode);
-                        device.scriptNode.connect(device.webaudio.destination);
-                    })
-                    .catch(function(error) {
-                        console.log("Failed to get user media: " + error);
-                    });
+                if (deviceType == window.miniaudio.device_type.playback) {
+                    device.scriptNode.connect(device.webaudio.destination);
+                }
+
+                device.pDevice = pDevice;
+
+                return window.miniaudio.track_device(device);
+            } catch (error) {
+                device.closed = true;
+                if (device.scriptNode) {
+                    device.scriptNode.onaudioprocess = null;
+                    device.scriptNode.disconnect();
+                }
+                if (device.webaudio) {
+                    device.webaudio.close().catch(function() {});
+                }
+                return -1;
             }
-
-            if (deviceType == window.miniaudio.device_type.playback) {
-                device.scriptNode.connect(device.webaudio.destination);
-            }
-
-            device.pDevice = pDevice;
-
-            return window.miniaudio.track_device(device);
         }, deviceType, channels, sampleRate, periodSizeInFrames, (ma_uintptr)pDeviceStateWebAudio->pIntermediaryBuffer, (ma_uintptr)pDevice);
 
         if (deviceIndex < 0) {
+            ma_free(pDeviceStateWebAudio->pIntermediaryBuffer, ma_device_get_allocation_callbacks(pDevice));
             ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
             return MA_FAILED_TO_OPEN_BACKEND_DEVICE;
         }
@@ -48219,7 +48855,15 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
         }
 
         if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
-            ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateWebAudio->async);
+            ma_result result;
+
+            result = ma_device_state_async_init(deviceType, pDescriptorPlayback, pDescriptorCapture, ma_device_get_allocation_callbacks(pDevice), &pDeviceStateWebAudio->async);
+            if (result != MA_SUCCESS) {
+                ma_device_state_uninit__webaudio(pDevice, pDeviceStateWebAudio);
+                return result;
+            }
+
+            pDeviceStateWebAudio->isAsyncInitialized = MA_TRUE;
         }
     }
     #endif
@@ -48229,65 +48873,66 @@ static ma_result ma_device_init__webaudio(ma_device* pDevice, const void* pDevic
     return MA_SUCCESS;
 }
 
-static void ma_device_uninit__webaudio(ma_device* pDevice)
+static void ma_device_state_uninit__webaudio(ma_device* pDevice, ma_device_state_webaudio* pDeviceStateWebAudio)
 {
-    ma_device_state_webaudio* pDeviceStateWebAudio = ma_device_get_backend_state__webaudio(pDevice);
+    #if defined(MA_USE_AUDIO_WORKLETS)
+    ma_webaudio_callback_close(pDeviceStateWebAudio->pCallbackData);
+    #endif
+
+    EM_ASM({
+        var device = window.miniaudio.get_device_by_index($0);
+        device.closed = true;
+        device.pDevice = undefined;
+
+        if (device.scriptNode !== undefined) {
+            device.scriptNode.onaudioprocess = null;
+            device.scriptNode.disconnect();
+            device.scriptNode = undefined;
+        }
+
+        if (device.streamNode !== undefined) {
+            device.streamNode.disconnect();
+            device.streamNode = undefined;
+        }
+
+        if (device.stream !== undefined) {
+            device.stream.getTracks().forEach(function(track) { track.stop(); });
+            device.stream = undefined;
+        }
+    }, pDeviceStateWebAudio->deviceIndex);
 
     #if defined(MA_USE_AUDIO_WORKLETS)
-    {
-        EM_ASM({
-            var device = window.miniaudio.get_device_by_index($0);
-
-            if (device.streamNode !== undefined) {
-                device.streamNode.disconnect();
-                device.streamNode = undefined;
-            }
-
-            device.pDevice = undefined;
-        }, pDeviceStateWebAudio->deviceIndex);
-
+    if (pDeviceStateWebAudio->audioWorklet != 0) {
         emscripten_destroy_web_audio_node(pDeviceStateWebAudio->audioWorklet);
-        emscripten_destroy_audio_context(pDeviceStateWebAudio->audioContext);
     }
-    #else
-    {
-        EM_ASM({
-            var device = window.miniaudio.get_device_by_index($0);
 
-            /* Make sure all nodes are disconnected and marked for collection. */
-            if (device.scriptNode !== undefined) {
-                device.scriptNode.onaudioprocess = function(e) {};  /* We want to reset the callback to ensure it doesn't get called after AudioContext.close() has returned. Shouldn't happen since we're disconnecting, but just to be safe... */
-                device.scriptNode.disconnect();
-                device.scriptNode = undefined;
-            }
-
-            if (device.streamNode !== undefined) {
-                device.streamNode.disconnect();
-                device.streamNode = undefined;
-            }
-
-            /*
-            Stop the device. I think there is a chance the callback could get fired after calling this, hence why we want
-            to clear the callback before closing.
-            */
-            device.webaudio.close();
-            device.webaudio = undefined;
-            device.pDevice = undefined;
-        }, pDeviceStateWebAudio->deviceIndex);
-    }
+    emscripten_destroy_audio_context(pDeviceStateWebAudio->audioContext);
     #endif
+
+    EM_ASM({
+        var device = window.miniaudio.get_device_by_index($0);
+        
+        /* Promise completion must not access the C device or its allocator. */
+        device.webaudio.close().catch(function() {});
+        device.webaudio = undefined;
+    }, pDeviceStateWebAudio->deviceIndex);
 
     /* Clean up the device on the JS side. */
     EM_ASM({
         window.miniaudio.untrack_device_by_index($0);
     }, pDeviceStateWebAudio->deviceIndex);
 
-    if (ma_device_get_threading_mode(pDevice) == MA_THREADING_MODE_SINGLE_THREADED) {
+    if (pDeviceStateWebAudio->isAsyncInitialized) {
         ma_device_state_async_uninit(&pDeviceStateWebAudio->async, ma_device_get_allocation_callbacks(pDevice));
     }
 
     ma_free(pDeviceStateWebAudio->pIntermediaryBuffer, ma_device_get_allocation_callbacks(pDevice));
     ma_free(pDeviceStateWebAudio, ma_device_get_allocation_callbacks(pDevice));
+}
+
+static void ma_device_uninit__webaudio(ma_device* pDevice)
+{
+    ma_device_state_uninit__webaudio(pDevice, ma_device_get_backend_state__webaudio(pDevice));
 }
 
 static ma_result ma_device_start__webaudio(ma_device* pDevice)
@@ -50475,8 +51120,15 @@ static ma_thread_result MA_THREADCALL ma_audio_thread(void* pData)
         }
     }
 
-    /* When we leave the loop we always need to uninitialize the backend. */
-    ma_device_op_do_uninit(pDevice, pOp->pCompletionEvent);
+    /*
+    Wait for any wakeup callback to return before freeing the backend state. The uninit operation
+    can be processed before ma_device_uninit() has finished waking up the backend.
+    */
+    ma_mutex_lock(&pDevice->startStopLock);
+    {
+        ma_device_op_do_uninit(pDevice, pOp->pCompletionEvent);
+    }
+    ma_mutex_unlock(&pDevice->startStopLock);
 
 end_audio_thread:
     #if defined(MA_WIN32) && !defined(MA_XBOX)
@@ -50740,10 +51392,12 @@ MA_API ma_uint32 ma_get_stock_device_backends(ma_device_backend_config* pBackend
 } 
 
 
-MA_API ma_result ma_context_init(const ma_device_backend_config* pBackends, ma_uint32 backendCount, const ma_context_config* pConfig, ma_context* pContext)
+MA_API ma_result ma_context_init(const ma_context_config* pConfig, ma_context* pContext)
 {
     ma_result result;
     ma_context_config defaultConfig;
+    const ma_device_backend_config* pBackends;
+    ma_uint32 backendCount;
     ma_uint32 iBackend;
     ma_device_backend_config pStockBackends[MA_MAX_STOCK_DEVICE_BACKENDS];
 
@@ -50785,6 +51439,8 @@ MA_API ma_result ma_context_init(const ma_device_backend_config* pBackends, ma_u
     }
 
     /* If NULL was passed in for the backend list we'll want to iterate over our default list. */
+    pBackends = pConfig->pBackends;
+    backendCount = pConfig->backendCount;
     if (pBackends == NULL) {
         pBackends = pStockBackends;
         backendCount = ma_get_stock_device_backends(pStockBackends, ma_countof(pStockBackends));
@@ -51133,6 +51789,7 @@ MA_API ma_device_config ma_device_config_init(ma_device_type deviceType)
 {
     ma_device_config config;
     MA_ZERO_OBJECT(&config);
+    config.contextConfig = ma_context_config_init();
     config.deviceType = deviceType;
     config.resampling = ma_resampler_config_init(ma_format_unknown, 0, 0, 0, ma_resample_algorithm_linear); /* Format/channels/rate don't matter here. */
 
@@ -51214,9 +51871,72 @@ static const void* ma_device_config_find_backend_config(const ma_device_config* 
 }
 
 
-MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pConfig, ma_device* pDevice)
+static ma_result ma_device_init_with_owned_context(const ma_device_config* pConfig, ma_device* pDevice)
 {
     ma_result result;
+    ma_context* pContext;
+    ma_context_config contextConfig;
+    ma_device_config deviceConfig;
+    const ma_device_backend_config* pBackends;
+    ma_uint32 backendCount;
+    ma_uint32 iBackend;
+    ma_allocation_callbacks allocationCallbacks;
+    ma_device_backend_config pStockBackends[MA_MAX_STOCK_DEVICE_BACKENDS];
+
+    if (pConfig == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    deviceConfig = *pConfig;
+    contextConfig = pConfig->contextConfig;
+
+    allocationCallbacks = ma_allocation_callbacks_init_copy(&contextConfig.allocationCallbacks);
+
+    pContext = (ma_context*)ma_malloc(sizeof(*pContext), &allocationCallbacks);
+    if (pContext == NULL) {
+        return MA_OUT_OF_MEMORY;
+    }
+
+    pBackends = contextConfig.pBackends;
+    backendCount = contextConfig.backendCount;
+    if (pBackends == NULL) {
+        pBackends = pStockBackends;
+        backendCount = ma_get_stock_device_backends(pStockBackends, ma_countof(pStockBackends));
+    }
+
+    result = MA_NO_BACKEND;
+
+    for (iBackend = 0; iBackend < backendCount; iBackend += 1) {
+        /* Try each backend with both context and device initialization before moving to the next. */
+        contextConfig.pBackends = &pBackends[iBackend];
+        contextConfig.backendCount = 1;
+
+        result = ma_context_init(&contextConfig, pContext);
+        if (result == MA_SUCCESS) {
+            deviceConfig.pContext = pContext;
+
+            result = ma_device_init(&deviceConfig, pDevice);
+            if (result == MA_SUCCESS) {
+                break;  /* Success. */
+            } else {
+                ma_context_uninit(pContext);   /* Failure. */
+            }
+        }
+    }
+
+    if (result != MA_SUCCESS) {
+        ma_free(pContext, &allocationCallbacks);
+        return result;
+    }
+
+    pDevice->isOwnerOfContext = MA_TRUE;
+    return result;
+}
+
+MA_API ma_result ma_device_init(const ma_device_config* pConfig, ma_device* pDevice)
+{
+    ma_result result;
+    ma_context* pContext;
     ma_device_backend_info backendInfo;
     ma_device_descriptor publicDescriptorPlayback;
     ma_device_descriptor publicDescriptorCapture;
@@ -51224,11 +51944,6 @@ MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pC
     ma_device_descriptor descriptorCapture;
     ma_threading_mode threadingMode;
     ma_device_op_params initParams;
-
-    /* The context can be null, in which case we self-manage it. */
-    if (pContext == NULL) {
-        return ma_device_init_ex(NULL, 0, NULL, pConfig, pDevice);
-    }
 
     if (pDevice == NULL) {
         return MA_INVALID_ARGS;
@@ -51238,6 +51953,12 @@ MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pC
 
     if (pConfig == NULL) {
         return MA_INVALID_ARGS;
+    }
+
+    /* The context can be null, in which case we self-manage it. */
+    pContext = pConfig->pContext;
+    if (pContext == NULL) {
+        return ma_device_init_with_owned_context(pConfig, pDevice);
     }
 
     /* We'll need the backend info to determine whether or not an audio thread can be created. */
@@ -51611,85 +52332,6 @@ MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pC
     return MA_SUCCESS;
 }
 
-MA_API ma_result ma_device_init_ex(const ma_device_backend_config* pBackends, ma_uint32 backendCount, const ma_context_config* pContextConfig, const ma_device_config* pConfig, ma_device* pDevice)
-{
-    ma_result result;
-    ma_context* pContext;
-    ma_uint32 iBackend;
-    ma_allocation_callbacks allocationCallbacks;
-    ma_device_backend_config pStockBackends[MA_MAX_STOCK_DEVICE_BACKENDS];
-
-    if (pConfig == NULL) {
-        return MA_INVALID_ARGS;
-    }
-
-    if (pContextConfig != NULL) {
-        allocationCallbacks = ma_allocation_callbacks_init_copy(&pContextConfig->allocationCallbacks);
-    } else {
-        allocationCallbacks = ma_allocation_callbacks_init_default();
-    }
-
-    pContext = (ma_context*)ma_malloc(sizeof(*pContext), &allocationCallbacks);
-    if (pContext == NULL) {
-        return MA_OUT_OF_MEMORY;
-    }
-
-    if (pBackends == NULL) {
-        pBackends = pStockBackends;
-        backendCount = ma_get_stock_device_backends(pStockBackends, ma_countof(pStockBackends));
-    }
-
-    result = MA_NO_BACKEND;
-
-    for (iBackend = 0; iBackend < backendCount; iBackend += 1) {
-        /*
-        This is a hack for iOS. If the context config is null, there's a good chance the
-        `ma_device_init(NULL, &deviceConfig, pDevice);` pattern is being used. In this
-        case, set the session category based on the device type.
-        */
-        #if defined(MA_APPLE_MOBILE)
-        {
-            ma_context_config contextConfig;
-
-            if (pContextConfig == NULL) {
-                contextConfig = ma_context_config_init();
-                switch (pConfig->deviceType) {
-                    case ma_device_type_duplex: {
-                        contextConfig.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
-                    } break;
-                    case ma_device_type_capture: {
-                        contextConfig.coreaudio.sessionCategory = ma_ios_session_category_record;
-                    } break;
-                    case ma_device_type_playback:
-                    default: {
-                        contextConfig.coreaudio.sessionCategory = ma_ios_session_category_playback;
-                    } break;
-                }
-
-                pContextConfig = &contextConfig;
-            }
-        }
-        #endif
-
-        result = ma_context_init(&pBackends[iBackend], 1, pContextConfig, pContext);
-        if (result == MA_SUCCESS) {
-            result = ma_device_init(pContext, pConfig, pDevice);
-            if (result == MA_SUCCESS) {
-                break;  /* Success. */
-            } else {
-                ma_context_uninit(pContext);   /* Failure. */
-            }
-        }
-    }
-
-    if (result != MA_SUCCESS) {
-        ma_free(pContext, &allocationCallbacks);
-        return result;
-    }
-
-    pDevice->isOwnerOfContext = MA_TRUE;
-    return result;
-}
 
 MA_API void ma_device_uninit(ma_device* pDevice)
 {
@@ -51715,6 +52357,13 @@ MA_API void ma_device_uninit(ma_device* pDevice)
     }
     #endif
 
+    /* Keep the backend state alive until the wakeup callback has returned. */
+    #ifndef MA_NO_THREADING
+    if (pDevice->hasAudioThread) {
+        ma_mutex_lock(&pDevice->startStopLock);
+    }
+    #endif
+
     /* Putting the device into an uninitialized state will make the worker thread return. */
     ma_device_set_status(pDevice, ma_device_status_uninitialized);
 
@@ -51734,6 +52383,8 @@ MA_API void ma_device_uninit(ma_device* pDevice)
             pDevice->pContext->pVTable->onDeviceWakeup(pDevice);
         }
 
+        /* The worker needs this lock to uninitialize the backend. Release it before joining. */
+        ma_mutex_unlock(&pDevice->startStopLock);
         ma_thread_wait(&pDevice->audioThread);
     } else
     #endif
@@ -52763,7 +53414,7 @@ MA_API void ma_device_state_async_process(ma_device_state_async* pAsyncDeviceSta
 
                     /* Move any remaining data to the front of the buffer. */
                     if (framesToCopy < pAsyncDeviceState->playback.frameCount) {
-                        MA_COPY_MEMORY(pAsyncDeviceState->playback.pBuffer, ma_offset_ptr(pAsyncDeviceState->playback.pBuffer, bytesPerFrame * framesToCopy), bytesPerFrame * (pAsyncDeviceState->playback.frameCount - framesToCopy));
+                        MA_MOVE_MEMORY(pAsyncDeviceState->playback.pBuffer, ma_offset_ptr(pAsyncDeviceState->playback.pBuffer, bytesPerFrame * framesToCopy), bytesPerFrame * (pAsyncDeviceState->playback.frameCount - framesToCopy));
                     }
 
                     pAsyncDeviceState->playback.frameCount -= framesToCopy;
@@ -69605,8 +70256,12 @@ static ma_result ma_data_source_read_pcm_frames_within_range(ma_data_source* pDa
                 }
             }
 
-            if (frameCount > (rangeEnd - absoluteCursor) && rangeEnd != ~((ma_uint64)0)) {
-                frameCount = (rangeEnd - absoluteCursor);
+            if (rangeEnd != ~((ma_uint64)0)) {
+                if (absoluteCursor >= rangeEnd) {
+                    frameCount = 0;
+                } else if (frameCount > rangeEnd - absoluteCursor) {
+                    frameCount = rangeEnd - absoluteCursor;
+                }
             }
 
             /*
@@ -69795,8 +70450,8 @@ MA_API ma_result ma_data_source_seek_to_pcm_frame(ma_data_source* pDataSource, m
         return MA_NOT_IMPLEMENTED;
     }
 
-    if (frameIndex > pDataSourceBase->rangeEndInFrames) {
-        return MA_INVALID_OPERATION;    /* Trying to seek too far forward. */
+    if (frameIndex > pDataSourceBase->rangeEndInFrames - pDataSourceBase->rangeBegInFrames) {
+        return MA_INVALID_OPERATION;    /* The frame index is relative to the start of the range. */
     }
 
     MA_ASSERT(pDataSourceBase->pVTable != NULL);
@@ -69898,8 +70553,8 @@ MA_API ma_result ma_data_source_get_channel_map(ma_data_source* pDataSource, ma_
     MA_ZERO_MEMORY(pQueriedChannelMap, sizeof(pQueriedChannelMap));
 
     result = ma_data_source_prop(pDataSource, MA_DATA_SOURCE_GET_CHANNEL_MAP, pQueriedChannelMap);
-    if (result != MA_SUCCESS) {
-        /* Most likely this just means MA_DATA_SOURCE_GET_CHANNEL_MAP is not implemented which means it's wants to use the default channel map. Just assume that. */
+    if (result == MA_NOT_IMPLEMENTED) {
+        /* The data source does not provide a channel map. Derive the default from its channel count. */
         ma_data_source_data_format dataFormat;
 
         result = ma_data_source_prop(pDataSource, MA_DATA_SOURCE_GET_DATA_FORMAT, &dataFormat);
@@ -69908,6 +70563,8 @@ MA_API ma_result ma_data_source_get_channel_map(ma_data_source* pDataSource, ma_
         }
 
         ma_channel_map_init_standard(ma_standard_channel_map_default, pQueriedChannelMap, ma_countof(pQueriedChannelMap), dataFormat.channels);
+    } else if (result != MA_SUCCESS) {
+        return result;
     }
 
     MA_COPY_MEMORY(pChannelMap, pQueriedChannelMap, ma_min(ma_countof(pQueriedChannelMap), channelMapCap));
@@ -69948,6 +70605,7 @@ MA_API ma_result ma_data_source_get_cursor_in_pcm_frames(ma_data_source* pDataSo
 
 MA_API ma_result ma_data_source_get_length_in_pcm_frames(ma_data_source* pDataSource, ma_uint64* pLength)
 {
+    ma_result result;
     ma_data_source_base* pDataSourceBase = (ma_data_source_base*)pDataSource;
     ma_uint64 rangeBegInFrames;
     ma_uint64 rangeEndInFrames;
@@ -69975,10 +70633,20 @@ MA_API ma_result ma_data_source_get_length_in_pcm_frames(ma_data_source* pDataSo
     }
 
     /*
-    Getting here means a range is not defined so we'll need to get the data source itself to tell
-    us the length.
+    The range has no explicit end. Query the full source length, then remove the range's start offset.
     */
-    return ma_data_source_prop(pDataSource, MA_DATA_SOURCE_GET_LENGTH, pLength);
+    result = ma_data_source_prop(pDataSource, MA_DATA_SOURCE_GET_LENGTH, pLength);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    if (*pLength > rangeBegInFrames) {
+        *pLength -= rangeBegInFrames;
+    } else {
+        *pLength = 0;
+    }
+
+    return MA_SUCCESS;
 }
 
 MA_API ma_result ma_data_source_get_cursor_in_seconds(ma_data_source* pDataSource, float* pCursor)
@@ -70057,8 +70725,8 @@ MA_API ma_result ma_data_source_set_looping(ma_data_source* pDataSource, ma_bool
     }
 
     result = ma_data_source_prop(pDataSource, MA_DATA_SOURCE_SET_LOOPING, &isLooping);
-    if (result == MA_SUCCESS) {
-        return MA_SUCCESS;
+    if (result != MA_NOT_IMPLEMENTED) {
+        return result;
     }
 
     /* Getting here means the backend is not self-managing the looping state so we'll do it ourselves. */
@@ -70104,6 +70772,19 @@ MA_API ma_result ma_data_source_set_range_in_pcm_frames(ma_data_source* pDataSou
         return MA_INVALID_ARGS; /* The end of the range must come after the beginning. */
     }
 
+    /* A backend that handles ranges also owns cursor adjustment and the loop-point reset. */
+    {
+        ma_pcm_range range;
+        
+        range.begInFrames = rangeBegInFrames;
+        range.endInFrames = rangeEndInFrames;
+
+        result = ma_data_source_prop(pDataSource, MA_DATA_SOURCE_SET_RANGE, &range);
+        if (result != MA_NOT_IMPLEMENTED) {
+            return result;
+        }
+    }
+
     ma_data_source_get_range_in_pcm_frames(pDataSource, &oldRangeBegInFrames, &oldRangeEndInFrames);
 
     /*
@@ -70124,27 +70805,8 @@ MA_API ma_result ma_data_source_set_range_in_pcm_frames(ma_data_source* pDataSou
         absoluteCursor = 0;
     }
 
-    /*
-    First try letting the backend deal with the range. If the backend doesn't want to deal with, we'll
-    do it ourselves here.
-    */
-    {
-        ma_pcm_range range;
-        range.begInFrames = rangeBegInFrames;
-        range.endInFrames = rangeEndInFrames;
-
-        result = ma_data_source_prop(pDataSource, MA_DATA_SOURCE_SET_RANGE, &range);
-        if (result == MA_NOT_IMPLEMENTED) {
-            /* The backend doesn't want to deal with the range. We'll do it here. */
-            pDataSourceBase->rangeBegInFrames = rangeBegInFrames;
-            pDataSourceBase->rangeEndInFrames = rangeEndInFrames;
-
-            /* Normalize the result to MA_SUCCESS just in case we update the code in the future to check the result code. */
-            result = MA_SUCCESS;
-        } else if (result != MA_SUCCESS) {
-            return result;
-        }
-    }
+    pDataSourceBase->rangeBegInFrames = rangeBegInFrames;
+    pDataSourceBase->rangeEndInFrames = rangeEndInFrames;
 
     /*
     It's possible for the range to have moved outside of the loop points. We'll just define this function
@@ -70223,6 +70885,10 @@ MA_API ma_result ma_data_source_set_loop_point_in_pcm_frames(ma_data_source* pDa
 
     if (loopEndInFrames > (rangeEndInFrames - rangeBegInFrames) && loopEndInFrames != ~((ma_uint64)0)) {
         loopEndInFrames = (rangeEndInFrames - rangeBegInFrames);
+    }
+
+    if (loopBegInFrames > rangeEndInFrames - rangeBegInFrames) {
+        return MA_INVALID_ARGS;    /* Clamping the end must not place it before the beginning. */
     }
 
     {
@@ -78347,7 +79013,7 @@ static ma_result ma_noise__data_source_on_seek(ma_data_source* pDataSource, ma_u
 
 static ma_result ma_noise__data_source_on_prop(ma_data_source* pDataSource, int prop, void* pData)
 {
-    ma_waveform* pNoise = (ma_waveform*)pDataSource;
+    ma_noise* pNoise = (ma_noise*)pDataSource;
 
     switch (prop)
     {
@@ -79909,12 +80575,11 @@ static ma_data_source* ma_resource_manager_data_buffer_get_connector(ma_resource
     };
 }
 
-static ma_result ma_resource_manager_data_buffer_init_connector(ma_resource_manager_data_buffer* pDataBuffer, const ma_resource_manager_data_source_config* pConfig, ma_async_notification* pInitNotification, ma_fence* pInitFence)
+static ma_result ma_resource_manager_data_buffer_init_connector(ma_resource_manager_data_buffer* pDataBuffer, ma_async_notification* pInitNotification, ma_fence* pInitFence)
 {
     ma_result result;
 
     MA_ASSERT(pDataBuffer != NULL);
-    MA_ASSERT(pConfig     != NULL);
     MA_ASSERT(ma_resource_manager_data_buffer_has_connector(pDataBuffer) == MA_FALSE);
 
     /* The underlying data buffer must be initialized before we'll be able to know how to initialize the backend. */
@@ -79964,30 +80629,7 @@ static ma_result ma_resource_manager_data_buffer_init_connector(ma_resource_mana
     the format/channels/rate of the data source.
     */
     if (result == MA_SUCCESS) {
-        /*
-        The resource manager supports the ability to set the range and loop settings via a config at
-        initialization time. This results in an case where the ranges could be set explicitly via
-        ma_data_source_set_*() before we get to this point here. If this happens, we'll end up
-        hitting a case where we just override those settings which results in what feels like a bug.
-
-        To address this we only change the relevant properties if they're not equal to defaults. If
-        they're equal to defaults there's no need to change them anyway. If they're *not* set to the
-        default values, we can assume the user has set the range and loop settings via the config. If
-        they're doing their own calls to ma_data_source_set_*() in addition to setting them via the
-        config, that's entirely on the caller and any synchronization issue becomes their problem.
-        */
-        if (pConfig->rangeBegInPCMFrames != MA_DATA_SOURCE_DEFAULT_RANGE_BEG || pConfig->rangeEndInPCMFrames != MA_DATA_SOURCE_DEFAULT_RANGE_END) {
-            ma_data_source_set_range_in_pcm_frames(pDataBuffer, pConfig->rangeBegInPCMFrames, pConfig->rangeEndInPCMFrames);
-        }
-
-        if (pConfig->loopPointBegInPCMFrames != MA_DATA_SOURCE_DEFAULT_LOOP_POINT_BEG || pConfig->loopPointEndInPCMFrames != MA_DATA_SOURCE_DEFAULT_LOOP_POINT_END) {
-            ma_data_source_set_loop_point_in_pcm_frames(pDataBuffer, pConfig->loopPointBegInPCMFrames, pConfig->loopPointEndInPCMFrames);
-        }
-
-        if ((pConfig->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING) != 0) {
-            ma_data_source_set_looping(pDataBuffer, MA_TRUE);
-        }
-
+        /* Publish the connector without accessing settings owned by the public API. */
         ma_atomic_bool32_set(&pDataBuffer->isConnectorInitialized, MA_TRUE);
 
         if (pInitNotification != NULL) {
@@ -80136,12 +80778,12 @@ static ma_result ma_resource_manager_data_buffer_node_init_supply_decoded(ma_res
         ma_silence_pcm_frames(pData, totalFrameCount, pDecoder->outputFormat, pDecoder->outputChannels);
 
         /* Data has been allocated and the data supply can now be initialized. */
-        pDataBufferNode->data.backend.decoded.pData             = pData;
-        pDataBufferNode->data.backend.decoded.totalFrameCount   = totalFrameCount;
-        pDataBufferNode->data.backend.decoded.format            = pDecoder->outputFormat;
-        pDataBufferNode->data.backend.decoded.channels          = pDecoder->outputChannels;
-        pDataBufferNode->data.backend.decoded.sampleRate        = pDecoder->outputSampleRate;
-        pDataBufferNode->data.backend.decoded.decodedFrameCount = 0;
+        pDataBufferNode->data.backend.decoded.pData           = pData;
+        pDataBufferNode->data.backend.decoded.totalFrameCount = totalFrameCount;
+        pDataBufferNode->data.backend.decoded.format          = pDecoder->outputFormat;
+        pDataBufferNode->data.backend.decoded.channels        = pDecoder->outputChannels;
+        pDataBufferNode->data.backend.decoded.sampleRate      = pDecoder->outputSampleRate;
+        ma_atomic_exchange_64(&pDataBufferNode->data.backend.decoded.decodedFrameCount, 0);
         ma_resource_manager_data_buffer_node_set_data_supply_type(pDataBufferNode, ma_resource_manager_data_supply_type_decoded);  /* <-- Must be set last. */
     } else {
         /*
@@ -80156,8 +80798,8 @@ static ma_result ma_resource_manager_data_buffer_node_init_supply_decoded(ma_res
             return result;
         }
 
-        pDataBufferNode->data.backend.decodedPaged.sampleRate        = pDecoder->outputSampleRate;
-        pDataBufferNode->data.backend.decodedPaged.decodedFrameCount = 0;
+        pDataBufferNode->data.backend.decodedPaged.sampleRate = pDecoder->outputSampleRate;
+        ma_atomic_exchange_64(&pDataBufferNode->data.backend.decodedPaged.decodedFrameCount, 0);
         ma_resource_manager_data_buffer_node_set_data_supply_type(pDataBufferNode, ma_resource_manager_data_supply_type_decoded_paged);  /* <-- Must be set last. */
     }
 
@@ -80193,7 +80835,7 @@ static ma_result ma_resource_manager_data_buffer_node_decode_next_page(ma_resour
         {
             /* The destination buffer is an offset to the existing buffer. Don't read more than we originally retrieved when we first initialized the decoder. */
             void* pDst;
-            ma_uint64 framesRemaining = pDataBufferNode->data.backend.decoded.totalFrameCount - pDataBufferNode->data.backend.decoded.decodedFrameCount;
+            ma_uint64 framesRemaining = pDataBufferNode->data.backend.decoded.totalFrameCount - ma_atomic_load_64(&pDataBufferNode->data.backend.decoded.decodedFrameCount);
             if (framesToTryReading > framesRemaining) {
                 framesToTryReading = framesRemaining;
             }
@@ -80201,13 +80843,13 @@ static ma_result ma_resource_manager_data_buffer_node_decode_next_page(ma_resour
             if (framesToTryReading > 0) {
                 pDst = ma_offset_ptr(
                     pDataBufferNode->data.backend.decoded.pData,
-                    pDataBufferNode->data.backend.decoded.decodedFrameCount * ma_get_bytes_per_frame(pDataBufferNode->data.backend.decoded.format, pDataBufferNode->data.backend.decoded.channels)
+                    ma_atomic_load_64(&pDataBufferNode->data.backend.decoded.decodedFrameCount) * ma_get_bytes_per_frame(pDataBufferNode->data.backend.decoded.format, pDataBufferNode->data.backend.decoded.channels)
                 );
                 MA_ASSERT(pDst != NULL);
 
                 result = ma_decoder_read_pcm_frames(pDecoder, pDst, framesToTryReading, &framesRead);
                 if (framesRead > 0) {
-                    pDataBufferNode->data.backend.decoded.decodedFrameCount += framesRead;
+                    ma_atomic_fetch_add_64(&pDataBufferNode->data.backend.decoded.decodedFrameCount, framesRead);
                 }
             } else {
                 framesRead = 0;
@@ -80230,7 +80872,7 @@ static ma_result ma_resource_manager_data_buffer_node_decode_next_page(ma_resour
 
                 result = ma_paged_audio_buffer_data_append_page(&pDataBufferNode->data.backend.decodedPaged.data, pPage);
                 if (result == MA_SUCCESS) {
-                    pDataBufferNode->data.backend.decodedPaged.decodedFrameCount += framesRead;
+                    ma_atomic_fetch_add_64(&pDataBufferNode->data.backend.decodedPaged.decodedFrameCount, framesRead);
                 } else {
                     /* Failed to append the page. Just abort and set the status to MA_AT_END. */
                     ma_paged_audio_buffer_data_free_page(&pDataBufferNode->data.backend.decodedPaged.data, pPage, &pResourceManager->config.allocationCallbacks);
@@ -80705,6 +81347,101 @@ static ma_result ma_resource_manager_data_buffer_cb__seek_to_pcm_frame(ma_data_s
     return ma_resource_manager_data_buffer_seek_to_pcm_frame((ma_resource_manager_data_buffer*)pDataSource, frameIndex);
 }
 
+static ma_bool32 ma_resource_manager_data_buffer_can_loop(ma_resource_manager_data_buffer* pDataBuffer)
+{
+    ma_uint64 decodedFrameCount;
+    ma_uint64 loopEnd;
+    ma_resource_manager_data_supply_type supplyType;
+
+    if (ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_SUCCESS) {
+        return MA_TRUE;
+    }
+
+    supplyType = ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode);
+    if (supplyType == ma_resource_manager_data_supply_type_encoded) {
+        return MA_TRUE;
+    }
+
+    loopEnd = pDataBuffer->range.endInFrames;
+    if (pDataBuffer->loopPoint.endInFrames != ~((ma_uint64)0)) {
+        loopEnd = ma_min(loopEnd, pDataBuffer->range.begInFrames + pDataBuffer->loopPoint.endInFrames);
+    }
+
+    if (supplyType == ma_resource_manager_data_supply_type_decoded) {
+        decodedFrameCount = ma_atomic_load_64(&pDataBuffer->pNode->data.backend.decoded.decodedFrameCount);
+        loopEnd = ma_min(loopEnd, pDataBuffer->pNode->data.backend.decoded.totalFrameCount);
+    } else if (supplyType == ma_resource_manager_data_supply_type_decoded_paged) {
+        decodedFrameCount = ma_atomic_load_64(&pDataBuffer->pNode->data.backend.decodedPaged.decodedFrameCount);
+    } else {
+        return MA_FALSE;
+    }
+
+    return loopEnd <= decodedFrameCount;
+}
+
+/* Only the public API may call this. The worker stops accessing the connector before publishing it. */
+static ma_result ma_resource_manager_data_buffer_apply_pending_state(ma_resource_manager_data_buffer* pDataBuffer)
+{
+    ma_data_source* pConnector;
+    ma_result result;
+
+    pConnector = ma_resource_manager_data_buffer_get_connector(pDataBuffer);
+    if (pConnector == NULL) {
+        return MA_BUSY;
+    }
+
+    if (pDataBuffer->isConnectorStateDirty) {
+        result = ma_data_source_set_range_in_pcm_frames(pConnector, pDataBuffer->range.begInFrames, pDataBuffer->range.endInFrames);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
+
+        result = ma_data_source_set_loop_point_in_pcm_frames(pConnector, pDataBuffer->loopPoint.begInFrames, pDataBuffer->loopPoint.endInFrames);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
+
+        pDataBuffer->isConnectorStateDirty = MA_FALSE;
+    }
+
+    /* A partially decoded connector must not loop at the temporary end of its data. */
+    result = ma_data_source_set_looping(pConnector, ma_atomic_load_32(&pDataBuffer->isLooping) && ma_resource_manager_data_buffer_can_loop(pDataBuffer));
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    if (pDataBuffer->seekToCursorOnNextRead) {
+        result = ma_data_source_seek_to_pcm_frame(pConnector, pDataBuffer->seekTargetInPCMFrames);
+        if (result != MA_SUCCESS) {
+            if (result == MA_BAD_SEEK) {
+                if ((ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode) == ma_resource_manager_data_supply_type_decoded_paged) && ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_BUSY) {
+                    return MA_BUSY;  /* The requested frame has not been decoded yet. Retain the seek. */
+                }
+            }
+
+            pDataBuffer->seekToCursorOnNextRead = MA_FALSE;
+            return result;
+        }
+
+        pDataBuffer->seekToCursorOnNextRead = MA_FALSE;
+    }
+
+    return MA_SUCCESS;
+}
+
+static ma_result ma_resource_manager_data_buffer_get_length_internal(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pLength)
+{
+    ma_data_source* pConnector;
+
+    pConnector = ma_resource_manager_data_buffer_get_connector(pDataBuffer);
+    if (pConnector == NULL) {
+        return MA_BUSY;
+    }
+
+    /* GET_LENGTH returns the full source length. The public data source API applies the range. */
+    return ma_data_source_prop(pConnector, MA_DATA_SOURCE_GET_LENGTH, pLength);
+}
+
 static ma_result ma_resource_manager_data_buffer_cb__prop(ma_data_source* pDataSource, int prop, void* pData)
 {
     ma_resource_manager_data_buffer* pDataBuffer = (ma_resource_manager_data_buffer*)pDataSource;
@@ -80730,24 +81467,73 @@ static ma_result ma_resource_manager_data_buffer_cb__prop(ma_data_source* pDataS
 
         case MA_DATA_SOURCE_GET_LENGTH:
         {
-            return ma_resource_manager_data_buffer_get_length_in_pcm_frames(pDataBuffer, (ma_uint64*)pData);
+            return ma_resource_manager_data_buffer_get_length_internal(pDataBuffer, (ma_uint64*)pData);
         }
 
         case MA_DATA_SOURCE_SET_LOOPING:
         {
-            ma_bool32 isLooping = *((ma_bool32*)pData);
-
-            ma_atomic_exchange_32(&pDataBuffer->isLooping, isLooping);
-
-            /* The looping state needs to be set on the connector as well or else looping won't work when we read audio data. */
-            ma_data_source_set_looping(ma_resource_manager_data_buffer_get_connector(pDataBuffer), isLooping);
-
+            ma_atomic_exchange_32(&pDataBuffer->isLooping, *((ma_bool32*)pData));
             return MA_SUCCESS;
         }
 
         case MA_DATA_SOURCE_GET_LOOPING:
         {
             *((ma_bool32*)pData) = ma_atomic_load_32(&pDataBuffer->isLooping);
+            return MA_SUCCESS;
+        }
+
+        case MA_DATA_SOURCE_SET_RANGE:
+        {
+            ma_pcm_range* pRange = (ma_pcm_range*)pData;
+            ma_uint64 cursor;
+            ma_result result;
+
+            result = ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(pDataBuffer, &cursor);
+            if (result != MA_SUCCESS) {
+                return result;
+            }
+
+            cursor += pDataBuffer->range.begInFrames;
+            if (cursor < pRange->begInFrames) {
+                cursor = pRange->begInFrames;
+            }
+            if (cursor > pRange->endInFrames) {
+                cursor = pRange->endInFrames;
+            }
+
+            pDataBuffer->range = *pRange;
+            pDataBuffer->loopPoint.begInFrames = 0;
+            pDataBuffer->loopPoint.endInFrames = ~((ma_uint64)0);
+            pDataBuffer->seekTargetInPCMFrames = cursor - pRange->begInFrames;
+            pDataBuffer->seekToCursorOnNextRead = MA_TRUE;
+            pDataBuffer->isConnectorStateDirty = MA_TRUE;
+
+            return MA_SUCCESS;
+        }
+
+        case MA_DATA_SOURCE_GET_RANGE:
+        {
+            *((ma_pcm_range*)pData) = pDataBuffer->range;
+            return MA_SUCCESS;
+        }
+
+        case MA_DATA_SOURCE_SET_LOOP_POINT:
+        {
+            ma_pcm_range* pRange = (ma_pcm_range*)pData;
+
+            if (pRange->endInFrames < pRange->begInFrames) {
+                return MA_INVALID_ARGS;
+            }
+
+            pDataBuffer->loopPoint = *pRange;
+            pDataBuffer->isConnectorStateDirty = MA_TRUE;
+
+            return MA_SUCCESS;
+        }
+
+        case MA_DATA_SOURCE_GET_LOOP_POINT:
+        {
+            *((ma_pcm_range*)pData) = pDataBuffer->loopPoint;
             return MA_SUCCESS;
         }
 
@@ -80796,6 +81582,16 @@ static ma_result ma_resource_manager_data_buffer_init_ex_internal(ma_resource_ma
         MA_ZERO_OBJECT(&notifications);
     }
 
+    if (pConfig->rangeEndInPCMFrames < pConfig->rangeBegInPCMFrames) {
+        ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
+        return MA_INVALID_ARGS;
+    }
+
+    if (pConfig->initialSeekPointInPCMFrames > pConfig->rangeEndInPCMFrames - pConfig->rangeBegInPCMFrames) {
+        ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
+        return MA_INVALID_ARGS;
+    }
+
     /* For safety, always remove the ASYNC flag if threading is disabled on the resource manager. */
     flags = pConfig->flags;
     if (ma_resource_manager_is_threading_enabled(pResourceManager) == MA_FALSE) {
@@ -80840,10 +81636,31 @@ static ma_result ma_resource_manager_data_buffer_init_ex_internal(ma_resource_ma
         pDataBuffer->flags  = flags;
         pDataBuffer->result = MA_BUSY;  /* Always default to MA_BUSY for safety. It'll be overwritten when loading completes or an error occurs. */
 
+        pDataBuffer->range.begInFrames = MA_DATA_SOURCE_DEFAULT_RANGE_BEG;
+        pDataBuffer->range.endInFrames = MA_DATA_SOURCE_DEFAULT_RANGE_END;
+        pDataBuffer->loopPoint.begInFrames = MA_DATA_SOURCE_DEFAULT_LOOP_POINT_BEG;
+        pDataBuffer->loopPoint.endInFrames = MA_DATA_SOURCE_DEFAULT_LOOP_POINT_END;
+        pDataBuffer->isConnectorStateDirty = MA_TRUE;
+        pDataBuffer->seekToCursorOnNextRead = MA_TRUE;
+        ma_atomic_exchange_32(&pDataBuffer->isLooping, (flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING) != 0);
+
+        result = ma_data_source_set_range_in_pcm_frames(pDataBuffer, pConfig->rangeBegInPCMFrames, pConfig->rangeEndInPCMFrames);
+        if (result == MA_SUCCESS) {
+            result = ma_data_source_set_loop_point_in_pcm_frames(pDataBuffer, pConfig->loopPointBegInPCMFrames, pConfig->loopPointEndInPCMFrames);
+        }
+
+        if (result != MA_SUCCESS) {
+            ma_resource_manager_data_buffer_node_unacquire(pResourceManager, pDataBufferNode, NULL, NULL);
+            ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
+            goto done;
+        }
+
+        pDataBuffer->seekTargetInPCMFrames = pConfig->initialSeekPointInPCMFrames;
+
         /* If we're loading asynchronously we need to post a job to the job queue to initialize the connector. */
         if (async == MA_FALSE || ma_resource_manager_data_buffer_node_result(pDataBufferNode) == MA_SUCCESS) {
             /* Loading synchronously or the data has already been fully loaded. We can just initialize the connector from here without a job. */
-            result = ma_resource_manager_data_buffer_init_connector(pDataBuffer, pConfig, NULL, NULL);
+            result = ma_resource_manager_data_buffer_init_connector(pDataBuffer, NULL, NULL);
             ma_atomic_exchange_i32(&pDataBuffer->result, result);
 
             ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
@@ -80874,11 +81691,6 @@ static ma_result ma_resource_manager_data_buffer_init_ex_internal(ma_resource_ma
             job.data.resourceManager.loadDataBuffer.pDoneNotification       = notifications.done.pNotification;
             job.data.resourceManager.loadDataBuffer.pInitFence              = notifications.init.pFence;
             job.data.resourceManager.loadDataBuffer.pDoneFence              = notifications.done.pFence;
-            job.data.resourceManager.loadDataBuffer.rangeBegInPCMFrames     = pConfig->rangeBegInPCMFrames;
-            job.data.resourceManager.loadDataBuffer.rangeEndInPCMFrames     = pConfig->rangeEndInPCMFrames;
-            job.data.resourceManager.loadDataBuffer.loopPointBegInPCMFrames = pConfig->loopPointBegInPCMFrames;
-            job.data.resourceManager.loadDataBuffer.loopPointEndInPCMFrames = pConfig->loopPointEndInPCMFrames;
-            job.data.resourceManager.loadDataBuffer.isLooping               = (flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING) != 0;
 
             /* If we need to wait for initialization to complete we can just process the job in place. */
             if ((flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_WAIT_INIT) != 0) {
@@ -80930,12 +81742,6 @@ static ma_result ma_resource_manager_data_buffer_init_ex_internal(ma_resource_ma
         }
     }
 done:
-    if (result == MA_SUCCESS) {
-        if (pConfig->initialSeekPointInPCMFrames > 0) {
-            ma_resource_manager_data_buffer_seek_to_pcm_frame(pDataBuffer, pConfig->initialSeekPointInPCMFrames);
-        }
-    }
-
     ma_resource_manager_pipeline_notifications_release_all_fences(&notifications);
 
     return result;
@@ -80981,7 +81787,15 @@ MA_API ma_result ma_resource_manager_data_buffer_init_copy(ma_resource_manager_d
     MA_ASSERT(pDataBuffer->pNode != NULL);  /* <-- If you've triggered this, you've passed in an invalid existing data buffer. */
 
     config = ma_resource_manager_data_source_config_init();
-    config.flags = pDataBuffer->flags;
+    config.flags = pDataBuffer->flags & ~MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING;
+    if (ma_resource_manager_data_buffer_is_looping(pDataBuffer)) {
+        config.flags |= MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING;
+    }
+
+    config.rangeBegInPCMFrames = pDataBuffer->range.begInFrames;
+    config.rangeEndInPCMFrames = pDataBuffer->range.endInFrames;
+    config.loopPointBegInPCMFrames = pDataBuffer->loopPoint.begInFrames;
+    config.loopPointEndInPCMFrames = pDataBuffer->loopPoint.endInFrames;
 
     return ma_resource_manager_data_buffer_init_ex_internal(pDataBuffer->pResourceManager, &config, pDataBuffer->pNode->hashedName32, pNewDataBuffer);
 }
@@ -81073,6 +81887,7 @@ MA_API ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_man
     ma_result result = MA_SUCCESS;
     ma_uint64 framesRead = 0;
     ma_bool32 isDecodedBufferBusy = MA_FALSE;
+    ma_bool32 isAtRangeEnd = MA_FALSE;
 
     /* Safety. */
     if (pFramesRead != NULL) {
@@ -81089,28 +81904,9 @@ MA_API ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_man
     */
     MA_ASSERT(ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) != MA_UNAVAILABLE);
 
-    /* If the node is not initialized we need to abort with a busy code. */
-    if (ma_resource_manager_data_buffer_has_connector(pDataBuffer) == MA_FALSE) {
-        return MA_BUSY; /* Still loading. */
-    }
-
-    /*
-    If we've got a seek scheduled we'll want to do that before reading. However, for paged buffers, there's
-    a chance that the sound hasn't yet been decoded up to the seek point will result in the seek failing. If
-    this happens, we need to keep the seek scheduled and return MA_BUSY.
-    */
-    if (pDataBuffer->seekToCursorOnNextRead) {
-        pDataBuffer->seekToCursorOnNextRead = MA_FALSE;
-
-        result = ma_data_source_seek_to_pcm_frame(ma_resource_manager_data_buffer_get_connector(pDataBuffer), pDataBuffer->seekTargetInPCMFrames);
-        if (result != MA_SUCCESS) {
-            if (result == MA_BAD_SEEK && ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode) == ma_resource_manager_data_supply_type_decoded_paged) {
-                pDataBuffer->seekToCursorOnNextRead = MA_TRUE;  /* Keep the seek scheduled. We just haven't loaded enough data yet to do the seek properly. */
-                return MA_BUSY;
-            }
-
-            return result;
-        }
+    result = ma_resource_manager_data_buffer_apply_pending_state(pDataBuffer);
+    if (result != MA_SUCCESS) {
+        return result;
     }
 
     /*
@@ -81121,6 +81917,9 @@ MA_API ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_man
         ma_uint64 availableFrames;
 
         isDecodedBufferBusy = (ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_BUSY);
+        if (ma_atomic_load_32(&pDataBuffer->isLooping) && ma_resource_manager_data_buffer_can_loop(pDataBuffer)) {
+            isDecodedBufferBusy = MA_FALSE;
+        }
 
         if (ma_resource_manager_data_buffer_get_available_frames(pDataBuffer, &availableFrames) == MA_SUCCESS) {
             /* Don't try reading more than the available frame count if the data buffer node is still loading. */
@@ -81155,12 +81954,23 @@ MA_API ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_man
         result = ma_data_source_read_pcm_frames(ma_resource_manager_data_buffer_get_connector(pDataBuffer), pFramesOut, frameCount, &framesRead);
     }
 
+    if (pDataBuffer->range.endInFrames != ~((ma_uint64)0)) {
+        ma_uint64 cursor;
+
+        if (ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(pDataBuffer, &cursor) == MA_SUCCESS) {
+            isAtRangeEnd = cursor >= pDataBuffer->range.endInFrames - pDataBuffer->range.begInFrames;
+            if (isAtRangeEnd) {
+                isDecodedBufferBusy = MA_FALSE;
+            }
+        }
+    }
+
     /*
     If we returned MA_AT_END, but the node is still loading, we don't want to return that code or else the caller will interpret the sound
     as at the end and terminate decoding.
     */
     if (result == MA_AT_END) {
-        if (ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_BUSY) {
+        if (!isAtRangeEnd && ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_BUSY) {
             result = MA_BUSY;
         }
     }
@@ -81182,27 +81992,20 @@ MA_API ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_man
 
 MA_API ma_result ma_resource_manager_data_buffer_seek_to_pcm_frame(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64 frameIndex)
 {
-    ma_result result;
+    if (pDataBuffer == NULL) {
+        return MA_INVALID_ARGS;
+    }
 
-    /* We cannot be using the data source after it's been uninitialized. */
     MA_ASSERT(ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) != MA_UNAVAILABLE);
 
-    /* If we haven't yet got a connector we need to abort. */
-    if (ma_resource_manager_data_buffer_has_connector(pDataBuffer) == MA_FALSE) {
-        pDataBuffer->seekTargetInPCMFrames = frameIndex;
-        pDataBuffer->seekToCursorOnNextRead = MA_TRUE;
-        return MA_BUSY; /* Still loading. */
+    if (frameIndex > pDataBuffer->range.endInFrames - pDataBuffer->range.begInFrames) {
+        return MA_INVALID_OPERATION;
     }
 
-    result = ma_data_source_seek_to_pcm_frame(ma_resource_manager_data_buffer_get_connector(pDataBuffer), frameIndex);
-    if (result != MA_SUCCESS) {
-        return result;
-    }
+    pDataBuffer->seekTargetInPCMFrames = frameIndex;
+    pDataBuffer->seekToCursorOnNextRead = MA_TRUE;
 
-    pDataBuffer->seekTargetInPCMFrames = ~(ma_uint64)0; /* <-- For identification purposes. */
-    pDataBuffer->seekToCursorOnNextRead = MA_FALSE;
-
-    return MA_SUCCESS;
+    return ma_resource_manager_data_buffer_apply_pending_state(pDataBuffer);
 }
 
 MA_API ma_result ma_resource_manager_data_buffer_get_data_format(ma_resource_manager_data_buffer* pDataBuffer, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
@@ -81214,6 +82017,10 @@ MA_API ma_result ma_resource_manager_data_buffer_get_data_format(ma_resource_man
     {
         case ma_resource_manager_data_supply_type_encoded:
         {
+            if (ma_resource_manager_data_buffer_has_connector(pDataBuffer) == MA_FALSE) {
+                return MA_BUSY;
+            }
+
             ma_data_source_get_data_format(&pDataBuffer->connector.decoder, pFormat, pChannels, pSampleRate);
             ma_data_source_get_channel_map(&pDataBuffer->connector.decoder, pChannelMap, channelMapCap);
             return MA_SUCCESS;
@@ -81221,19 +82028,37 @@ MA_API ma_result ma_resource_manager_data_buffer_get_data_format(ma_resource_man
 
         case ma_resource_manager_data_supply_type_decoded:
         {
-            *pFormat     = pDataBuffer->pNode->data.backend.decoded.format;
-            *pChannels   = pDataBuffer->pNode->data.backend.decoded.channels;
-            *pSampleRate = pDataBuffer->pNode->data.backend.decoded.sampleRate;
+            if (pFormat != NULL) {
+                *pFormat = pDataBuffer->pNode->data.backend.decoded.format;
+            }
+
+            if (pChannels != NULL) {
+                *pChannels = pDataBuffer->pNode->data.backend.decoded.channels;
+            }
+
+            if (pSampleRate != NULL) {
+                *pSampleRate = pDataBuffer->pNode->data.backend.decoded.sampleRate;
+            }
+
             ma_channel_map_init_standard(ma_standard_channel_map_default, pChannelMap, channelMapCap, pDataBuffer->pNode->data.backend.decoded.channels);
             return MA_SUCCESS;
         };
 
         case ma_resource_manager_data_supply_type_decoded_paged:
         {
-            *pFormat     = pDataBuffer->pNode->data.backend.decodedPaged.data.format;
-            *pChannels   = pDataBuffer->pNode->data.backend.decodedPaged.data.channels;
-            *pSampleRate = pDataBuffer->pNode->data.backend.decodedPaged.sampleRate;
-            ma_channel_map_init_standard(ma_standard_channel_map_default, pChannelMap, channelMapCap, pDataBuffer->pNode->data.backend.decoded.channels);
+            if (pFormat != NULL) {
+                *pFormat = pDataBuffer->pNode->data.backend.decodedPaged.data.format;
+            }
+
+            if (pChannels != NULL) {
+                *pChannels = pDataBuffer->pNode->data.backend.decodedPaged.data.channels;
+            }
+
+            if (pSampleRate != NULL) {
+                *pSampleRate = pDataBuffer->pNode->data.backend.decodedPaged.sampleRate;
+            }
+
+            ma_channel_map_init_standard(ma_standard_channel_map_default, pChannelMap, channelMapCap, pDataBuffer->pNode->data.backend.decodedPaged.data.channels);
             return MA_SUCCESS;
         };
 
@@ -81252,58 +82077,31 @@ MA_API ma_result ma_resource_manager_data_buffer_get_data_format(ma_resource_man
 
 MA_API ma_result ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pCursor)
 {
+    ma_data_source* pConnector;
+
     if (pDataBuffer == NULL || pCursor == NULL) {
         return MA_INVALID_ARGS;
     }
 
-    /* We cannot be using the data source after it's been uninitialized. */
+    *pCursor = 0;
     MA_ASSERT(ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) != MA_UNAVAILABLE);
 
-    *pCursor = 0;
-
-    switch (ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode))
-    {
-        case ma_resource_manager_data_supply_type_encoded:
-        {
-            return ma_decoder_get_cursor_in_pcm_frames(&pDataBuffer->connector.decoder, pCursor);
-        };
-
-        case ma_resource_manager_data_supply_type_decoded:
-        {
-            return ma_audio_buffer_get_cursor_in_pcm_frames(&pDataBuffer->connector.buffer, pCursor);
-        };
-
-        case ma_resource_manager_data_supply_type_decoded_paged:
-        {
-            return ma_paged_audio_buffer_get_cursor_in_pcm_frames(&pDataBuffer->connector.pagedBuffer, pCursor);
-        };
-
-        case ma_resource_manager_data_supply_type_unknown:
-        {
-            return MA_BUSY;
-        };
-
-        default:
-        {
-            return MA_INVALID_ARGS;
-        }
+    if (pDataBuffer->seekToCursorOnNextRead) {
+        *pCursor = pDataBuffer->seekTargetInPCMFrames;
+        return MA_SUCCESS;
     }
+
+    pConnector = ma_resource_manager_data_buffer_get_connector(pDataBuffer);
+    if (pConnector == NULL) {
+        return MA_BUSY;
+    }
+
+    return ma_data_source_get_cursor_in_pcm_frames(pConnector, pCursor);
 }
 
 MA_API ma_result ma_resource_manager_data_buffer_get_length_in_pcm_frames(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pLength)
 {
-    if (pDataBuffer == NULL || pLength == NULL) {
-        return MA_INVALID_ARGS;
-    }
-
-    /* We cannot be using the data source after it's been uninitialized. */
-    MA_ASSERT(ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) != MA_UNAVAILABLE);
-
-    if (ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode) == ma_resource_manager_data_supply_type_unknown) {
-        return MA_BUSY; /* Still loading. */
-    }
-
-    return ma_data_source_get_length_in_pcm_frames(ma_resource_manager_data_buffer_get_connector(pDataBuffer), pLength);
+    return ma_data_source_get_length_in_pcm_frames(pDataBuffer, pLength);
 }
 
 MA_API ma_result ma_resource_manager_data_buffer_result(const ma_resource_manager_data_buffer* pDataBuffer)
@@ -81327,57 +82125,77 @@ MA_API ma_bool32 ma_resource_manager_data_buffer_is_looping(const ma_resource_ma
 
 MA_API ma_result ma_resource_manager_data_buffer_get_available_frames(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pAvailableFrames)
 {
+    ma_result result;
+    ma_uint64 cursor;
+    ma_uint64 decodedFrameCount;
+    ma_uint64 rangeEnd;
+
     if (pAvailableFrames == NULL) {
         return MA_INVALID_ARGS;
     }
 
     *pAvailableFrames = 0;
-
     if (pDataBuffer == NULL) {
         return MA_INVALID_ARGS;
     }
 
-    if (ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode) == ma_resource_manager_data_supply_type_unknown) {
-        if (ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_BUSY) {
-            return MA_BUSY;
-        } else {
-            return MA_INVALID_OPERATION;    /* No connector. */
-        }
+    result = ma_resource_manager_data_buffer_apply_pending_state(pDataBuffer);
+    if (result != MA_SUCCESS) {
+        return result;
     }
 
+    result = ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(pDataBuffer, &cursor);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    cursor += pDataBuffer->range.begInFrames;
     switch (ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode))
     {
         case ma_resource_manager_data_supply_type_encoded:
         {
-            return ma_decoder_get_available_frames(&pDataBuffer->connector.decoder, pAvailableFrames);
-        };
+            result = ma_decoder_get_available_frames(&pDataBuffer->connector.decoder, pAvailableFrames);
+            if (result != MA_SUCCESS) {
+                return result;
+            }
+        } break;
 
         case ma_resource_manager_data_supply_type_decoded:
         {
-            return ma_audio_buffer_get_available_frames(&pDataBuffer->connector.buffer, pAvailableFrames);
-        };
+            if (ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode) == MA_BUSY) {
+                decodedFrameCount = ma_atomic_load_64(&pDataBuffer->pNode->data.backend.decoded.decodedFrameCount);
+            } else {
+                decodedFrameCount = pDataBuffer->pNode->data.backend.decoded.totalFrameCount;
+            }
+
+            if (decodedFrameCount > cursor) {
+                *pAvailableFrames = decodedFrameCount - cursor;
+            }
+        } break;
 
         case ma_resource_manager_data_supply_type_decoded_paged:
         {
-            ma_uint64 cursor;
-            ma_paged_audio_buffer_get_cursor_in_pcm_frames(&pDataBuffer->connector.pagedBuffer, &cursor);
-
-            if (pDataBuffer->pNode->data.backend.decodedPaged.decodedFrameCount > cursor) {
-                *pAvailableFrames = pDataBuffer->pNode->data.backend.decodedPaged.decodedFrameCount - cursor;
-            } else {
-                *pAvailableFrames = 0;
+            decodedFrameCount = ma_atomic_load_64(&pDataBuffer->pNode->data.backend.decodedPaged.decodedFrameCount);
+            if (decodedFrameCount > cursor) {
+                *pAvailableFrames = decodedFrameCount - cursor;
             }
+        } break;
 
-            return MA_SUCCESS;
-        };
-
-        case ma_resource_manager_data_supply_type_unknown:
-        default:
-        {
-            /* Unknown supply type. Should never hit this. */
-            return MA_INVALID_ARGS;
-        }
+        default: return MA_INVALID_ARGS;
     }
+
+    rangeEnd = pDataBuffer->range.endInFrames;
+    if (ma_atomic_load_32(&pDataBuffer->isLooping) && pDataBuffer->loopPoint.endInFrames != ~((ma_uint64)0)) {
+        rangeEnd = ma_min(rangeEnd, pDataBuffer->range.begInFrames + pDataBuffer->loopPoint.endInFrames);
+    }
+
+    if (cursor >= rangeEnd) {
+        *pAvailableFrames = 0;
+    } else if (*pAvailableFrames > rangeEnd - cursor) {
+        *pAvailableFrames = rangeEnd - cursor;
+    }
+
+    return MA_SUCCESS;
 }
 
 MA_API ma_result ma_resource_manager_register_file(ma_resource_manager* pResourceManager, const char* pFilePath, ma_uint32 flags)
@@ -81402,6 +82220,7 @@ static ma_result ma_resource_manager_register_decoded_data_internal(ma_resource_
     data.type                            = ma_resource_manager_data_supply_type_decoded;
     data.backend.decoded.pData           = pData;
     data.backend.decoded.totalFrameCount = frameCount;
+    ma_atomic_exchange_64(&data.backend.decoded.decodedFrameCount, frameCount);
     data.backend.decoded.format          = format;
     data.backend.decoded.channels        = channels;
     data.backend.decoded.sampleRate      = sampleRate;
@@ -81506,6 +82325,90 @@ static ma_result ma_resource_manager_data_stream_cb__seek_to_pcm_frame(ma_data_s
     return ma_resource_manager_data_stream_seek_to_pcm_frame((ma_resource_manager_data_stream*)pDataSource, frameIndex);
 }
 
+static ma_result ma_resource_manager_data_stream_post_update(ma_resource_manager_data_stream* pDataStream, const ma_pcm_range* pRange, const ma_pcm_range* pLoopPoint, ma_uint64 frameIndex)
+{
+    ma_job job;
+    ma_result result;
+    ma_uint64 length;
+    ma_bool32 isLooping;
+
+    result = ma_resource_manager_data_stream_result(pDataStream);
+    if (result != MA_SUCCESS && result != MA_BUSY) {
+        return result;
+    }
+
+    if (frameIndex > pRange->endInFrames - pRange->begInFrames) {
+        return MA_INVALID_OPERATION;
+    }
+
+    length = ma_atomic_load_64(&pDataStream->totalLengthInPCMFrames);
+    if (length > 0 && (pRange->begInFrames > length || frameIndex > length - pRange->begInFrames)) {
+        return MA_BAD_SEEK;
+    }
+
+    isLooping = ma_atomic_load_32(&pDataStream->isLooping);
+
+    ma_atomic_fetch_add_32(&pDataStream->seekCounter, 1);
+
+    job = ma_job_init(MA_JOB_TYPE_RESOURCE_MANAGER_SEEK_DATA_STREAM);
+    job.order = ma_resource_manager_data_stream_next_execution_order(pDataStream);
+    job.data.resourceManager.seekDataStream.pDataStream = pDataStream;
+    job.data.resourceManager.seekDataStream.frameIndex = frameIndex;
+    job.data.resourceManager.seekDataStream.range = *pRange;
+    job.data.resourceManager.seekDataStream.loopPoint = *pLoopPoint;
+    job.data.resourceManager.seekDataStream.isLooping = isLooping;
+
+    result = ma_resource_manager_post_job(pDataStream->pResourceManager, &job);
+    if (result != MA_SUCCESS) {
+        ma_atomic_fetch_sub_32(&pDataStream->executionCounter, 1);
+        ma_atomic_fetch_sub_32(&pDataStream->seekCounter, 1);
+        return result;
+    }
+
+    pDataStream->relativeCursor = 0;
+    pDataStream->currentPageIndex = 0;
+    pDataStream->range = *pRange;
+    pDataStream->loopPoint = *pLoopPoint;
+    pDataStream->appliedLooping = isLooping;
+    ma_atomic_exchange_64(&pDataStream->absoluteCursor, pRange->begInFrames + frameIndex);
+
+    return MA_SUCCESS;
+}
+
+static ma_result ma_resource_manager_data_stream_update_looping(ma_resource_manager_data_stream* pDataStream)
+{
+    ma_uint64 cursor;
+    ma_result result;
+
+    if (ma_atomic_load_32(&pDataStream->isLooping) == pDataStream->appliedLooping) {
+        return MA_SUCCESS;
+    }
+
+    result = ma_resource_manager_data_stream_get_cursor_in_pcm_frames(pDataStream, &cursor);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    return ma_resource_manager_data_stream_post_update(pDataStream, &pDataStream->range, &pDataStream->loopPoint, cursor);
+}
+
+static ma_result ma_resource_manager_data_stream_get_length_internal(ma_resource_manager_data_stream* pDataStream, ma_uint64* pLength)
+{
+    ma_result result;
+
+    result = ma_resource_manager_data_stream_result(pDataStream);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    *pLength = ma_atomic_load_64(&pDataStream->totalLengthInPCMFrames);
+    if (*pLength == 0) {
+        return MA_NOT_IMPLEMENTED;
+    }
+
+    return MA_SUCCESS;
+}
+
 static ma_result ma_resource_manager_data_stream_cb__prop(ma_data_source* pDataSource, int prop, void* pData)
 {
     ma_resource_manager_data_stream* pDataStream = (ma_resource_manager_data_stream*)pDataSource;
@@ -81531,7 +82434,7 @@ static ma_result ma_resource_manager_data_stream_cb__prop(ma_data_source* pDataS
 
         case MA_DATA_SOURCE_GET_LENGTH:
         {
-            return ma_resource_manager_data_stream_get_length_in_pcm_frames(pDataStream, (ma_uint64*)pData);
+            return ma_resource_manager_data_stream_get_length_internal(pDataStream, (ma_uint64*)pData);
         }
 
         case MA_DATA_SOURCE_SET_LOOPING:
@@ -81543,6 +82446,56 @@ static ma_result ma_resource_manager_data_stream_cb__prop(ma_data_source* pDataS
         case MA_DATA_SOURCE_GET_LOOPING:
         {
             *((ma_bool32*)pData) = ma_atomic_load_32(&pDataStream->isLooping);
+            return MA_SUCCESS;
+        }
+
+        case MA_DATA_SOURCE_SET_RANGE:
+        {
+            ma_pcm_range* pRange = (ma_pcm_range*)pData;
+            ma_pcm_range loopPoint;
+            ma_uint64 cursor;
+
+            cursor = ma_atomic_load_64(&pDataStream->absoluteCursor);
+            if (cursor < pRange->begInFrames) {
+                cursor = pRange->begInFrames;
+            }
+            if (cursor > pRange->endInFrames) {
+                cursor = pRange->endInFrames;
+            }
+
+            loopPoint.begInFrames = 0;
+            loopPoint.endInFrames = ~((ma_uint64)0);
+
+            return ma_resource_manager_data_stream_post_update(pDataStream, pRange, &loopPoint, cursor - pRange->begInFrames);
+        }
+
+        case MA_DATA_SOURCE_GET_RANGE:
+        {
+            *((ma_pcm_range*)pData) = pDataStream->range;
+            return MA_SUCCESS;
+        }
+
+        case MA_DATA_SOURCE_SET_LOOP_POINT:
+        {
+            ma_pcm_range* pLoopPoint = (ma_pcm_range*)pData;
+            ma_uint64 cursor;
+            ma_result result;
+
+            if (pLoopPoint->endInFrames < pLoopPoint->begInFrames || pLoopPoint->begInFrames > pDataStream->range.endInFrames - pDataStream->range.begInFrames) {
+                return MA_INVALID_ARGS;
+            }
+
+            result = ma_resource_manager_data_stream_get_cursor_in_pcm_frames(pDataStream, &cursor);
+            if (result != MA_SUCCESS) {
+                return result;
+            }
+
+            return ma_resource_manager_data_stream_post_update(pDataStream, &pDataStream->range, pLoopPoint, cursor);
+        }
+
+        case MA_DATA_SOURCE_GET_LOOP_POINT:
+        {
+            *((ma_pcm_range*)pData) = pDataStream->loopPoint;
             return MA_SUCCESS;
         }
 
@@ -81561,16 +82514,6 @@ static ma_data_source_vtable ma_gDataSourceVTable_ResourceManagerDataStream =
     ma_resource_manager_data_stream_cb__seek_to_pcm_frame,
     ma_resource_manager_data_stream_cb__prop
 };
-
-static void ma_resource_manager_data_stream_set_absolute_cursor(ma_resource_manager_data_stream* pDataStream, ma_uint64 absoluteCursor)
-{
-    /* Loop if possible. */
-    if (absoluteCursor > pDataStream->totalLengthInPCMFrames && pDataStream->totalLengthInPCMFrames > 0) {
-        absoluteCursor = absoluteCursor % pDataStream->totalLengthInPCMFrames;
-    }
-
-    ma_atomic_exchange_64(&pDataStream->absoluteCursor, absoluteCursor);
-}
 
 MA_API ma_result ma_resource_manager_data_stream_init_ex(ma_resource_manager* pResourceManager, const ma_resource_manager_data_source_config* pConfig, ma_resource_manager_data_stream* pDataStream)
 {
@@ -81617,14 +82560,36 @@ MA_API ma_result ma_resource_manager_data_stream_init_ex(ma_resource_manager* pR
     pDataStream->flags            = pConfig->flags;
     pDataStream->result           = MA_BUSY;
 
-    ma_data_source_set_range_in_pcm_frames(pDataStream, pConfig->rangeBegInPCMFrames, pConfig->rangeEndInPCMFrames);
-    ma_data_source_set_loop_point_in_pcm_frames(pDataStream, pConfig->loopPointBegInPCMFrames, pConfig->loopPointEndInPCMFrames);
-    ma_data_source_set_looping(pDataStream, (flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING) != 0);
-
     if (pResourceManager == NULL || (pConfig->pFilePath == NULL && pConfig->pFilePathW == NULL)) {
         ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
         return MA_INVALID_ARGS;
     }
+
+    if (pConfig->rangeEndInPCMFrames < pConfig->rangeBegInPCMFrames) {
+        ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
+        return MA_INVALID_ARGS;
+    }
+
+    pDataStream->range.begInFrames = pConfig->rangeBegInPCMFrames;
+    pDataStream->range.endInFrames = pConfig->rangeEndInPCMFrames;
+    pDataStream->loopPoint.begInFrames = pConfig->loopPointBegInPCMFrames;
+    pDataStream->loopPoint.endInFrames = pConfig->loopPointEndInPCMFrames;
+    if (pDataStream->loopPoint.endInFrames != ~((ma_uint64)0)) {
+        pDataStream->loopPoint.endInFrames = ma_min(pDataStream->loopPoint.endInFrames, pDataStream->range.endInFrames - pDataStream->range.begInFrames);
+    }
+
+    if (pDataStream->loopPoint.endInFrames < pDataStream->loopPoint.begInFrames || pDataStream->loopPoint.begInFrames > pDataStream->range.endInFrames - pDataStream->range.begInFrames) {
+        ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
+        return MA_INVALID_ARGS;
+    }
+
+    if (pConfig->initialSeekPointInPCMFrames > pDataStream->range.endInFrames - pDataStream->range.begInFrames) {
+        ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
+        return MA_INVALID_ARGS;
+    }
+
+    pDataStream->appliedLooping = (flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING) != 0;
+    ma_atomic_exchange_32(&pDataStream->isLooping, pDataStream->appliedLooping);
 
     /* We want all access to the VFS and the internal decoder to happen on the job thread just to keep things easier to manage for the VFS.  */
 
@@ -81652,15 +82617,19 @@ MA_API ma_result ma_resource_manager_data_stream_init_ex(ma_resource_manager* pR
     ma_resource_manager_pipeline_notifications_acquire_all_fences(&notifications);
 
     /* Set the absolute cursor to our initial seek position so retrieval of the cursor returns a good value. */
-    ma_resource_manager_data_stream_set_absolute_cursor(pDataStream, pConfig->initialSeekPointInPCMFrames);
+    ma_atomic_exchange_64(&pDataStream->absoluteCursor, pDataStream->range.begInFrames + pConfig->initialSeekPointInPCMFrames);
 
     /* We now have everything we need to post the job. This is the last thing we need to do from here. The rest will be done by the job thread. */
     job = ma_job_init(MA_JOB_TYPE_RESOURCE_MANAGER_LOAD_DATA_STREAM);
     job.order = ma_resource_manager_data_stream_next_execution_order(pDataStream);
     job.data.resourceManager.loadDataStream.pDataStream       = pDataStream;
     job.data.resourceManager.loadDataStream.initialSeekPoint  = pConfig->initialSeekPointInPCMFrames;
+    job.data.resourceManager.loadDataStream.range             = pDataStream->range;
+    job.data.resourceManager.loadDataStream.loopPoint         = pDataStream->loopPoint;
+    job.data.resourceManager.loadDataStream.isLooping         = pDataStream->appliedLooping;
     job.data.resourceManager.loadDataStream.pInitNotification = (waitBeforeReturning == MA_TRUE) ? &waitNotification : notifications.init.pNotification;
     job.data.resourceManager.loadDataStream.pInitFence        = notifications.init.pFence;
+
     result = ma_resource_manager_post_job(pResourceManager, &job);
     if (result != MA_SUCCESS) {
         ma_resource_manager_pipeline_notifications_signal_all_notifications(&notifications);
@@ -81692,6 +82661,12 @@ MA_API ma_result ma_resource_manager_data_stream_init_ex(ma_resource_manager* pR
             while (ma_atomic_load_32(&pDataStream->executionPointer) != ma_atomic_load_32(&pDataStream->executionCounter)) {
                 ma_yield();
             }
+
+            /* The caller will not uninitialize a data stream that failed to initialize so the file path needs to be freed here. */
+            ma_free(pDataStream->pFilePath,  &pResourceManager->config.allocationCallbacks);
+            ma_free(pDataStream->pFilePathW, &pResourceManager->config.allocationCallbacks);
+            pDataStream->pFilePath  = NULL;
+            pDataStream->pFilePathW = NULL;
 
             return pDataStream->result;
         }
@@ -81735,9 +82710,17 @@ MA_API ma_result ma_resource_manager_data_stream_init_copy(ma_resource_manager_d
     }
 
     config = ma_resource_manager_data_source_config_init();
-    config.pFilePath  = pDataStream->pFilePath;
-    config.pFilePathW = pDataStream->pFilePathW;
-    config.flags      = pDataStream->flags;
+    config.pFilePath               = pDataStream->pFilePath;
+    config.pFilePathW              = pDataStream->pFilePathW;
+    config.rangeBegInPCMFrames     = pDataStream->range.begInFrames;
+    config.rangeEndInPCMFrames     = pDataStream->range.endInFrames;
+    config.loopPointBegInPCMFrames = pDataStream->loopPoint.begInFrames;
+    config.loopPointEndInPCMFrames = pDataStream->loopPoint.endInFrames;
+
+    config.flags = pDataStream->flags & ~MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING;
+    if (ma_resource_manager_data_stream_is_looping(pDataStream)) {
+        config.flags |= MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING;
+    }
 
     return ma_resource_manager_data_stream_init_ex(pDataStream->pResourceManager, &config, pNewDataStream);
 }
@@ -81746,6 +82729,7 @@ MA_API ma_result ma_resource_manager_data_stream_uninit(ma_resource_manager_data
 {
     ma_resource_manager_inline_notification freeEvent;
     ma_job job;
+    ma_result result;
 
     if (pDataStream == NULL) {
         return MA_INVALID_ARGS;
@@ -81765,7 +82749,32 @@ MA_API ma_result ma_resource_manager_data_stream_uninit(ma_resource_manager_data
     job.data.resourceManager.freeDataStream.pDataStream       = pDataStream;
     job.data.resourceManager.freeDataStream.pDoneNotification = &freeEvent;
     job.data.resourceManager.freeDataStream.pDoneFence        = NULL;
-    ma_resource_manager_post_job(pDataStream->pResourceManager, &job);
+
+    /*
+    This awkward loop is for dealing with the case when the resource manager has run out of room in the job queue. It's just waiting
+    for space in multi-threaded mode, or processing jobs in place right here when in single-threaded mode which will free up a slot.
+    */
+    for (;;) {
+        result = ma_resource_manager_post_job(pDataStream->pResourceManager, &job);
+        if (result != MA_OUT_OF_MEMORY) {
+            break;
+        }
+
+        if (ma_resource_manager_is_threading_enabled(pDataStream->pResourceManager)) {
+            ma_yield();
+        } else {
+            result = ma_resource_manager_process_next_job(pDataStream->pResourceManager);
+            if (result == MA_CANCELLED) {
+                break;
+            }
+        }
+    }
+
+    if (result != MA_SUCCESS) {
+        ma_atomic_fetch_sub_32(&pDataStream->executionCounter, 1);
+        ma_resource_manager_inline_notification_uninit(&freeEvent);
+        return result;
+    }
 
     /* We need to wait for the job to finish processing before we return. */
     ma_resource_manager_inline_notification_wait_and_uninit(&freeEvent);
@@ -81794,52 +82803,152 @@ static void* ma_resource_manager_data_stream_get_page_data_pointer(ma_resource_m
     return ma_offset_ptr(pDataStream->pPageData, ((ma_resource_manager_data_stream_get_page_size_in_frames(pDataStream) * pageIndex) + relativeCursor) * ma_get_bytes_per_frame(pDataStream->decoder.outputFormat, pDataStream->decoder.outputChannels));
 }
 
-static void ma_resource_manager_data_stream_fill_page(ma_resource_manager_data_stream* pDataStream, ma_uint32 pageIndex)
+static ma_result ma_resource_manager_data_stream_fill_page(ma_resource_manager_data_stream* pDataStream, ma_uint32 pageIndex)
 {
-    ma_result result = MA_SUCCESS;
+    ma_result result;
     ma_uint64 pageSizeInFrames;
-    ma_uint64 totalFramesReadForThisPage = 0;
-    void* pPageData = ma_resource_manager_data_stream_get_page_data_pointer(pDataStream, pageIndex, 0);
+    ma_uint64 totalFramesRead = 0;
+    ma_uint64 cursor;
+    ma_uint64 rangeLength;
+    ma_uint64 length;
+    ma_uint64 loopEnd;
+    ma_pcm_range range;
+    ma_pcm_range loopPoint;
+    void* pPageData;
+    ma_bool32 isAtEnd = MA_FALSE;
 
     pageSizeInFrames = ma_resource_manager_data_stream_get_page_size_in_frames(pDataStream);
+    pPageData = ma_resource_manager_data_stream_get_page_data_pointer(pDataStream, pageIndex, 0);
 
-    /* The decoder needs to inherit the stream's looping and range state. */
-    {
-        ma_uint64 rangeBeg;
-        ma_uint64 rangeEnd;
-        ma_uint64 loopPointBeg;
-        ma_uint64 loopPointEnd;
+    ma_data_source_get_range_in_pcm_frames(&pDataStream->decoder, &range.begInFrames, &range.endInFrames);
+    ma_data_source_get_loop_point_in_pcm_frames(&pDataStream->decoder, &loopPoint.begInFrames, &loopPoint.endInFrames);
 
-        ma_data_source_set_looping(&pDataStream->decoder, ma_resource_manager_data_stream_is_looping(pDataStream));
-
-        ma_data_source_get_range_in_pcm_frames(pDataStream, &rangeBeg, &rangeEnd);
-        ma_data_source_set_range_in_pcm_frames(&pDataStream->decoder, rangeBeg, rangeEnd);
-
-        ma_data_source_get_loop_point_in_pcm_frames(pDataStream, &loopPointBeg, &loopPointEnd);
-        ma_data_source_set_loop_point_in_pcm_frames(&pDataStream->decoder, loopPointBeg, loopPointEnd);
+    rangeLength = ~((ma_uint64)0);
+    if (range.endInFrames != ~((ma_uint64)0)) {
+        rangeLength = range.endInFrames - range.begInFrames;
     }
 
-    /* Just read straight from the decoder. It will deal with ranges and looping for us. */
-    result = ma_data_source_read_pcm_frames(&pDataStream->decoder, pPageData, pageSizeInFrames, &totalFramesReadForThisPage);
-    if (result == MA_AT_END || totalFramesReadForThisPage < pageSizeInFrames) {
+    length = ma_atomic_load_64(&pDataStream->totalLengthInPCMFrames);
+    if (length > 0) {
+        if (length > range.begInFrames) {
+            rangeLength = ma_min(rangeLength, length - range.begInFrames);
+        } else {
+            rangeLength = 0;
+        }
+    }
+
+    loopEnd = ma_min(rangeLength, loopPoint.endInFrames);
+
+    result = ma_data_source_get_cursor_in_pcm_frames(&pDataStream->decoder, &cursor);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    pDataStream->pageCursorInPCMFrames[pageIndex] = cursor;
+
+    while (totalFramesRead < pageSizeInFrames) {
+        ma_uint64 framesToRead;
+        ma_uint64 framesRead = 0;
+        void* pFramesOut;
+
+        if (pDataStream->isDecoderLooping && cursor >= loopEnd) {
+            if (loopPoint.begInFrames >= loopEnd) {
+                isAtEnd = MA_TRUE;
+                break;  /* Empty loop. */
+            }
+
+            result = ma_data_source_seek_to_pcm_frame(&pDataStream->decoder, loopPoint.begInFrames);
+            if (result != MA_SUCCESS) {
+                return result;
+            }
+
+            cursor = loopPoint.begInFrames;
+        }
+
+        if (totalFramesRead == 0) {
+            pDataStream->pageCursorInPCMFrames[pageIndex] = cursor;
+        }
+
+        framesToRead = pageSizeInFrames - totalFramesRead;
+        if (pDataStream->isDecoderLooping) {
+            framesToRead = ma_min(framesToRead, loopEnd - cursor);
+        }
+
+        pFramesOut = ma_offset_pcm_frames_ptr(pPageData, totalFramesRead, pDataStream->decoder.outputFormat, pDataStream->decoder.outputChannels);
+        
+        result = ma_data_source_read_pcm_frames(&pDataStream->decoder, pFramesOut, framesToRead, &framesRead);
+        if (result != MA_SUCCESS && result != MA_AT_END) {
+            return result;
+        }
+
+        totalFramesRead += framesRead;
+        cursor += framesRead;
+
+        if (result == MA_AT_END || framesRead == 0) {
+            /* An open-ended range reaching EOF gives us the previously unknown full source length. */
+            if (range.endInFrames == ~((ma_uint64)0) || cursor < rangeLength) {
+                ma_atomic_compare_and_swap_64(&pDataStream->totalLengthInPCMFrames, 0, range.begInFrames + cursor);
+            }
+
+            loopEnd = ma_min(loopEnd, cursor);
+            if (!pDataStream->isDecoderLooping || loopPoint.begInFrames >= loopEnd) {
+                isAtEnd = MA_TRUE;
+                break;
+            }
+        }
+    }
+
+    pDataStream->pageLoopEndInPCMFrames[pageIndex] = loopEnd;
+    if (isAtEnd) {
         ma_atomic_exchange_32(&pDataStream->isDecoderAtEnd, MA_TRUE);
     }
 
-    ma_atomic_exchange_32(&pDataStream->pageFrameCount[pageIndex], (ma_uint32)totalFramesReadForThisPage);
+    ma_atomic_exchange_32(&pDataStream->pageFrameCount[pageIndex], (ma_uint32)totalFramesRead);
     ma_atomic_exchange_32(&pDataStream->isPageValid[pageIndex], MA_TRUE);
+
+    return MA_SUCCESS;
 }
 
-static void ma_resource_manager_data_stream_fill_pages(ma_resource_manager_data_stream* pDataStream)
+static ma_result ma_resource_manager_data_stream_apply_state(ma_resource_manager_data_stream* pDataStream, const ma_pcm_range* pRange, const ma_pcm_range* pLoopPoint, ma_bool32 isLooping, ma_uint64 frameIndex)
 {
+    ma_result result;
     ma_uint32 iPage;
 
-    MA_ASSERT(pDataStream != NULL);
+    ma_atomic_exchange_32(&pDataStream->isPageValid[0], MA_FALSE);
+    ma_atomic_exchange_32(&pDataStream->isPageValid[1], MA_FALSE);
+    ma_atomic_exchange_32(&pDataStream->isDecoderAtEnd, MA_FALSE);
+    pDataStream->isDecoderLooping = isLooping;
+
+    /* The stream fills loops explicitly so page cursor metadata can include unknown-length EOF. */
+    result = ma_data_source_set_looping(&pDataStream->decoder, MA_FALSE);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    result = ma_data_source_set_range_in_pcm_frames(&pDataStream->decoder, pRange->begInFrames, pRange->endInFrames);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    result = ma_data_source_set_loop_point_in_pcm_frames(&pDataStream->decoder, pLoopPoint->begInFrames, pLoopPoint->endInFrames);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    result = ma_data_source_seek_to_pcm_frame(&pDataStream->decoder, frameIndex);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
 
     for (iPage = 0; iPage < 2; iPage += 1) {
-        ma_resource_manager_data_stream_fill_page(pDataStream, iPage);
+        result = ma_resource_manager_data_stream_fill_page(pDataStream, iPage);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
     }
-}
 
+    return MA_SUCCESS;
+}
 
 static ma_result ma_resource_manager_data_stream_map(ma_resource_manager_data_stream* pDataStream, void** ppFramesOut, ma_uint64* pFrameCount)
 {
@@ -81910,6 +83019,9 @@ static ma_result ma_resource_manager_data_stream_unmap(ma_resource_manager_data_
     ma_uint32 newRelativeCursor;
     ma_uint32 pageSizeInFrames;
     ma_job job;
+    ma_result result;
+    ma_uint64 cursor;
+    ma_uint64 loopEnd;
 
     /* We cannot be using the data source after it's been uninitialized. */
     MA_ASSERT(ma_resource_manager_data_stream_result(pDataStream) != MA_UNAVAILABLE);
@@ -81929,8 +83041,14 @@ static ma_result ma_resource_manager_data_stream_unmap(ma_resource_manager_data_
 
     pageSizeInFrames = ma_resource_manager_data_stream_get_page_size_in_frames(pDataStream);
 
-    /* The absolute cursor needs to be updated for ma_resource_manager_data_stream_get_cursor_in_pcm_frames(). */
-    ma_resource_manager_data_stream_set_absolute_cursor(pDataStream, ma_atomic_load_64(&pDataStream->absoluteCursor) + frameCount);
+    cursor = pDataStream->pageCursorInPCMFrames[pDataStream->currentPageIndex] + pDataStream->relativeCursor + frameCount;
+    loopEnd = pDataStream->pageLoopEndInPCMFrames[pDataStream->currentPageIndex];
+
+    if (pDataStream->appliedLooping && cursor > loopEnd && loopEnd > pDataStream->loopPoint.begInFrames) {
+        cursor = pDataStream->loopPoint.begInFrames + 1 + (cursor - loopEnd - 1) % (loopEnd - pDataStream->loopPoint.begInFrames);
+    }
+
+    ma_atomic_exchange_64(&pDataStream->absoluteCursor, pDataStream->range.begInFrames + cursor);
 
     /* Here is where we need to check if we need to load a new page, and if so, post a job to load it. */
     newRelativeCursor = pDataStream->relativeCursor + (ma_uint32)frameCount;
@@ -81951,7 +83069,14 @@ static ma_result ma_resource_manager_data_stream_unmap(ma_resource_manager_data_
         /* Before posting the job we need to make sure we set some state. */
         pDataStream->relativeCursor   = newRelativeCursor;
         pDataStream->currentPageIndex = (pDataStream->currentPageIndex + 1) & 0x01;
-        return ma_resource_manager_post_job(pDataStream->pResourceManager, &job);
+        
+        result = ma_resource_manager_post_job(pDataStream->pResourceManager, &job);
+        if (result != MA_SUCCESS) {
+            ma_atomic_fetch_sub_32(&pDataStream->executionCounter, 1);
+            ma_atomic_compare_and_swap_i32(&pDataStream->result, MA_SUCCESS, result);
+        }
+
+        return result;
     } else {
         /* We haven't moved into a new page so we can just move the cursor forward. */
         pDataStream->relativeCursor = newRelativeCursor;
@@ -81983,8 +83108,14 @@ MA_API ma_result ma_resource_manager_data_stream_read_pcm_frames(ma_resource_man
         return MA_INVALID_ARGS;
     }
 
-    if (ma_resource_manager_data_stream_result(pDataStream) != MA_SUCCESS) {
-        return MA_INVALID_OPERATION;
+    result = ma_resource_manager_data_stream_result(pDataStream);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    result = ma_resource_manager_data_stream_update_looping(pDataStream);
+    if (result != MA_SUCCESS) {
+        return result;
     }
 
     /* Don't attempt to read while we're in the middle of seeking. Tell the caller that we're busy. */
@@ -82032,58 +83163,19 @@ MA_API ma_result ma_resource_manager_data_stream_read_pcm_frames(ma_resource_man
 
 MA_API ma_result ma_resource_manager_data_stream_seek_to_pcm_frame(ma_resource_manager_data_stream* pDataStream, ma_uint64 frameIndex)
 {
-    ma_job job;
-    ma_result streamResult;
-
-    streamResult = ma_resource_manager_data_stream_result(pDataStream);
-
-    /* We cannot be using the data source after it's been uninitialized. */
-    MA_ASSERT(streamResult != MA_UNAVAILABLE);
-
     if (pDataStream == NULL) {
         return MA_INVALID_ARGS;
     }
 
-    if (streamResult != MA_SUCCESS && streamResult != MA_BUSY) {
-        return MA_INVALID_OPERATION;
-    }
-
-    /* If we're not already seeking and we're sitting on the same frame, just make this a no-op. */
-    if (ma_atomic_load_32(&pDataStream->seekCounter) == 0) {
-        if (ma_atomic_load_64(&pDataStream->absoluteCursor) == frameIndex) {
-            return MA_SUCCESS;
+    if (ma_resource_manager_data_stream_result(pDataStream) == MA_SUCCESS && ma_resource_manager_data_stream_seek_counter(pDataStream) == 0) {
+        if (ma_atomic_load_32(&pDataStream->isLooping) == pDataStream->appliedLooping) {
+            if (frameIndex == ma_atomic_load_64(&pDataStream->absoluteCursor) - pDataStream->range.begInFrames) {
+                return MA_SUCCESS;
+            }
         }
     }
 
-
-    /* Increment the seek counter first to indicate to read_paged_pcm_frames() and map_paged_pcm_frames() that we are in the middle of a seek and MA_BUSY should be returned. */
-    ma_atomic_fetch_add_32(&pDataStream->seekCounter, 1);
-
-    /* Update the absolute cursor so that ma_resource_manager_data_stream_get_cursor_in_pcm_frames() returns the new position. */
-    ma_resource_manager_data_stream_set_absolute_cursor(pDataStream, frameIndex);
-
-    /*
-    We need to clear our currently loaded pages so that the stream starts playback from the new seek point as soon as possible. These are for the purpose of the public
-    API and will be ignored by the seek job. The seek job will operate on the assumption that both pages have been marked as invalid and the cursor is at the start of
-    the first page.
-    */
-    pDataStream->relativeCursor   = 0;
-    pDataStream->currentPageIndex = 0;
-    ma_atomic_exchange_32(&pDataStream->isPageValid[0], MA_FALSE);
-    ma_atomic_exchange_32(&pDataStream->isPageValid[1], MA_FALSE);
-
-    /* Make sure the data stream is not marked as at the end or else if we seek in response to hitting the end, we won't be able to read any more data. */
-    ma_atomic_exchange_32(&pDataStream->isDecoderAtEnd, MA_FALSE);
-
-    /*
-    The public API is not allowed to touch the internal decoder so we need to use a job to perform the seek. When seeking, the job thread will assume both pages
-    are invalid and any content contained within them will be discarded and replaced with newly decoded data.
-    */
-    job = ma_job_init(MA_JOB_TYPE_RESOURCE_MANAGER_SEEK_DATA_STREAM);
-    job.order = ma_resource_manager_data_stream_next_execution_order(pDataStream);
-    job.data.resourceManager.seekDataStream.pDataStream = pDataStream;
-    job.data.resourceManager.seekDataStream.frameIndex  = frameIndex;
-    return ma_resource_manager_post_job(pDataStream->pResourceManager, &job);
+    return ma_resource_manager_data_stream_post_update(pDataStream, &pDataStream->range, &pDataStream->loopPoint, frameIndex);
 }
 
 MA_API ma_result ma_resource_manager_data_stream_get_data_format(ma_resource_manager_data_stream* pDataStream, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
@@ -82152,44 +83244,14 @@ MA_API ma_result ma_resource_manager_data_stream_get_cursor_in_pcm_frames(ma_res
         return MA_INVALID_OPERATION;
     }
 
-    *pCursor = ma_atomic_load_64(&pDataStream->absoluteCursor);
+    *pCursor = ma_atomic_load_64(&pDataStream->absoluteCursor) - pDataStream->range.begInFrames;
 
     return MA_SUCCESS;
 }
 
 MA_API ma_result ma_resource_manager_data_stream_get_length_in_pcm_frames(ma_resource_manager_data_stream* pDataStream, ma_uint64* pLength)
 {
-    ma_result streamResult;
-
-    if (pLength == NULL) {
-        return MA_INVALID_ARGS;
-    }
-
-    *pLength = 0;
-
-    streamResult = ma_resource_manager_data_stream_result(pDataStream);
-
-    /* We cannot be using the data source after it's been uninitialized. */
-    MA_ASSERT(streamResult != MA_UNAVAILABLE);
-
-    if (pDataStream == NULL) {
-        return MA_INVALID_ARGS;
-    }
-
-    if (streamResult != MA_SUCCESS) {
-        return streamResult;
-    }
-
-    /*
-    We most definitely do not want to be calling ma_decoder_get_length_in_pcm_frames() directly. Instead we want to use a cached value that we
-    calculated when we initialized it on the job thread.
-    */
-    *pLength = pDataStream->totalLengthInPCMFrames;
-    if (*pLength == 0) {
-        return MA_NOT_IMPLEMENTED;  /* Some decoders may not have a known length. */
-    }
-
-    return MA_SUCCESS;
+    return ma_data_source_get_length_in_pcm_frames(pDataStream, pLength);
 }
 
 MA_API ma_result ma_resource_manager_data_stream_result(const ma_resource_manager_data_stream* pDataStream)
@@ -82217,6 +83279,7 @@ MA_API ma_bool32 ma_resource_manager_data_stream_is_looping(const ma_resource_ma
 
 MA_API ma_result ma_resource_manager_data_stream_get_available_frames(ma_resource_manager_data_stream* pDataStream, ma_uint64* pAvailableFrames)
 {
+    ma_result result;
     ma_uint32 pageIndex0;
     ma_uint32 pageIndex1;
     ma_uint32 relativeCursor;
@@ -82230,6 +83293,20 @@ MA_API ma_result ma_resource_manager_data_stream_get_available_frames(ma_resourc
 
     if (pDataStream == NULL) {
         return MA_INVALID_ARGS;
+    }
+
+    result = ma_resource_manager_data_stream_result(pDataStream);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    result = ma_resource_manager_data_stream_update_looping(pDataStream);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+
+    if (ma_resource_manager_data_stream_seek_counter(pDataStream) > 0) {
+        return MA_BUSY;
     }
 
     pageIndex0     =  pDataStream->currentPageIndex;
@@ -82741,18 +83818,7 @@ static ma_result ma_job_process__resource_manager__load_data_buffer(ma_job* pJob
 
         if (dataSupplyType != ma_resource_manager_data_supply_type_unknown) {
             /* We can now initialize the connector. If this fails, we need to abort. It's very rare for this to fail. */
-            ma_resource_manager_data_source_config dataSourceConfig;    /* For setting initial looping state and range. */
-            dataSourceConfig = ma_resource_manager_data_source_config_init();
-            dataSourceConfig.rangeBegInPCMFrames     = pJob->data.resourceManager.loadDataBuffer.rangeBegInPCMFrames;
-            dataSourceConfig.rangeEndInPCMFrames     = pJob->data.resourceManager.loadDataBuffer.rangeEndInPCMFrames;
-            dataSourceConfig.loopPointBegInPCMFrames = pJob->data.resourceManager.loadDataBuffer.loopPointBegInPCMFrames;
-            dataSourceConfig.loopPointEndInPCMFrames = pJob->data.resourceManager.loadDataBuffer.loopPointEndInPCMFrames;
-
-            if (pJob->data.resourceManager.loadDataBuffer.isLooping) {
-                dataSourceConfig.flags |= MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING;
-            }
-
-            result = ma_resource_manager_data_buffer_init_connector(pDataBuffer, &dataSourceConfig, pJob->data.resourceManager.loadDataBuffer.pInitNotification, pJob->data.resourceManager.loadDataBuffer.pInitFence);
+            result = ma_resource_manager_data_buffer_init_connector(pDataBuffer, pJob->data.resourceManager.loadDataBuffer.pInitNotification, pJob->data.resourceManager.loadDataBuffer.pInitFence);
             if (result != MA_SUCCESS) {
                 ma_log_postf(ma_resource_manager_get_log(pResourceManager), MA_LOG_LEVEL_ERROR, "Failed to initialize connector for data buffer. %s.", ma_result_description(result));
                 goto done;
@@ -82845,6 +83911,7 @@ static ma_result ma_job_process__resource_manager__load_data_stream(ma_job* pJob
     ma_uint32 pageBufferSizeInBytes;
     ma_resource_manager* pResourceManager;
     ma_resource_manager_data_stream* pDataStream;
+    ma_uint64 length;
 
     MA_ASSERT(pJob != NULL);
 
@@ -82876,13 +83943,16 @@ static ma_result ma_job_process__resource_manager__load_data_stream(ma_job* pJob
 
     /* Retrieve the total length of the file before marking the decoder as loaded. */
     if ((pDataStream->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_UNKNOWN_LENGTH) == 0) {
-        result = ma_decoder_get_length_in_pcm_frames(&pDataStream->decoder, &pDataStream->totalLengthInPCMFrames);
+        result = ma_decoder_get_length_in_pcm_frames(&pDataStream->decoder, &length);
         if (result != MA_SUCCESS) {
+            ma_decoder_uninit(&pDataStream->decoder);
             goto done;  /* Failed to retrieve the length. */
         }
     } else {
-        pDataStream->totalLengthInPCMFrames = 0;
+        length = 0;
     }
+
+    ma_atomic_exchange_64(&pDataStream->totalLengthInPCMFrames, length);
 
     /*
     Only mark the decoder as initialized when the length of the decoder has been retrieved because that can possibly require a scan over the whole file
@@ -82896,20 +83966,24 @@ static ma_result ma_job_process__resource_manager__load_data_stream(ma_job* pJob
     pDataStream->pPageData = ma_malloc(pageBufferSizeInBytes, &pResourceManager->config.allocationCallbacks);
     if (pDataStream->pPageData == NULL) {
         ma_decoder_uninit(&pDataStream->decoder);
+        pDataStream->isDecoderInitialized = MA_FALSE;
         result = MA_OUT_OF_MEMORY;
         goto done;
     }
 
-    /* Seek to our initial seek point before filling the initial pages. */
-    ma_decoder_seek_to_pcm_frame(&pDataStream->decoder, pJob->data.resourceManager.loadDataStream.initialSeekPoint);
-
-    /* We have our decoder and our page buffer, so now we need to fill our pages. */
-    ma_resource_manager_data_stream_fill_pages(pDataStream);
-
-    /* And now we're done. We want to make sure the result is MA_SUCCESS. */
-    result = MA_SUCCESS;
+    result = ma_resource_manager_data_stream_apply_state(pDataStream, &pJob->data.resourceManager.loadDataStream.range, &pJob->data.resourceManager.loadDataStream.loopPoint, pJob->data.resourceManager.loadDataStream.isLooping, pJob->data.resourceManager.loadDataStream.initialSeekPoint);
+    if (result != MA_SUCCESS) {
+        ma_free(pDataStream->pPageData, &pResourceManager->config.allocationCallbacks);
+        pDataStream->pPageData = NULL;
+        ma_decoder_uninit(&pDataStream->decoder);
+        pDataStream->isDecoderInitialized = MA_FALSE;
+    }
 
 done:
+    if (result == MA_BUSY) {
+        result = MA_ERROR;  /* This job is retiring, so no operation remains to resolve a busy state. */
+    }
+
     /* We can only change the status away from MA_BUSY. If it's set to anything else it means an error has occurred somewhere or the uninitialization process has started (most likely). */
     ma_atomic_compare_and_swap_i32(&pDataStream->result, MA_BUSY, result);
 
@@ -82990,7 +84064,14 @@ static ma_result ma_job_process__resource_manager__page_data_stream(ma_job* pJob
         goto done;
     }
 
-    ma_resource_manager_data_stream_fill_page(pDataStream, pJob->data.resourceManager.pageDataStream.pageIndex);
+    result = ma_resource_manager_data_stream_fill_page(pDataStream, pJob->data.resourceManager.pageDataStream.pageIndex);
+    if (result == MA_BUSY) {
+        result = MA_ERROR;  /* No retry job remains after this operation completes. */
+    }
+
+    if (result != MA_SUCCESS) {
+        ma_atomic_compare_and_swap_i32(&pDataStream->result, MA_SUCCESS, result);
+    }
 
 done:
     ma_atomic_fetch_add_32(&pDataStream->executionPointer, 1);
@@ -83020,19 +84101,17 @@ static ma_result ma_job_process__resource_manager__seek_data_stream(ma_job* pJob
         goto done;
     }
 
-    /*
-    With seeking we just assume both pages are invalid and the relative frame cursor at position 0. This is basically exactly the same as loading, except
-    instead of initializing the decoder, we seek to a frame.
-    */
-    ma_decoder_seek_to_pcm_frame(&pDataStream->decoder, pJob->data.resourceManager.seekDataStream.frameIndex);
+    result = ma_resource_manager_data_stream_apply_state(pDataStream, &pJob->data.resourceManager.seekDataStream.range, &pJob->data.resourceManager.seekDataStream.loopPoint, pJob->data.resourceManager.seekDataStream.isLooping, pJob->data.resourceManager.seekDataStream.frameIndex);
+    if (result == MA_BUSY) {
+        result = MA_ERROR;  /* No retry job remains after this operation completes. */
+    }
 
-    /* After seeking we'll need to reload the pages. */
-    ma_resource_manager_data_stream_fill_pages(pDataStream);
-
-    /* We need to let the public API know that we're done seeking. */
-    ma_atomic_fetch_sub_32(&pDataStream->seekCounter, 1);
+    if (result != MA_SUCCESS) {
+        ma_atomic_compare_and_swap_i32(&pDataStream->result, MA_SUCCESS, result);
+    }
 
 done:
+    ma_atomic_fetch_sub_32(&pDataStream->seekCounter, 1);
     ma_atomic_fetch_add_32(&pDataStream->executionPointer, 1);
     return result;
 }
@@ -87132,14 +88211,43 @@ MA_API ma_sound_group_config ma_sound_group_config_init(ma_engine* pEngine)
 }
 
 
+#if !defined(MA_NO_DEVICE_IO)
+static void ma_engine_data_callback_internal(ma_device* pDevice, void* pFramesOut, const void* pFramesIn, ma_uint32 frameCount);
+#endif
+
 MA_API ma_engine_config ma_engine_config_init(void)
 {
     ma_engine_config config;
 
     MA_ZERO_OBJECT(&config);
-    config.listenerCount             = 1;   /* Always want at least one listener. */
-    config.monoExpansionMode         = ma_mono_expansion_mode_default;
-    config.resourceManagerResampling = ma_resampler_config_init(ma_format_unknown, 0, 0, 0, ma_resample_algorithm_linear);
+    #if !defined(MA_NO_RESOURCE_MANAGER)
+    {
+        config.resourceManagerConfig = ma_resource_manager_config_init();
+        config.resourceManagerConfig.decodedFormat   = ma_format_f32;
+        config.resourceManagerConfig.decodedChannels = 0;  /* Preserve native channel counts for spatialization. */
+
+        /* The Emscripten build cannot use threads unless it's targeting pthreads. */
+        #if defined(MA_EMSCRIPTEN) && !defined(__EMSCRIPTEN_PTHREADS__)
+        {
+            config.resourceManagerConfig.jobThreadCount = 0;
+            config.resourceManagerConfig.flags |= MA_RESOURCE_MANAGER_FLAG_NO_THREADING;
+        }
+        #endif
+    }
+    #endif
+
+    #if !defined(MA_NO_DEVICE_IO)
+    {
+        config.deviceConfig = ma_device_config_init(ma_device_type_playback);
+        config.deviceConfig.playback.format           = ma_format_f32;
+        config.deviceConfig.dataCallback              = ma_engine_data_callback_internal;
+        config.deviceConfig.noPreSilencedOutputBuffer = MA_TRUE;    /* The engine writes every output frame. */
+        config.deviceConfig.noClip                    = MA_TRUE;    /* The engine clips its output by default. */
+    }
+    #endif
+
+    config.listenerCount     = 1;   /* Always want at least one listener. */
+    config.monoExpansionMode = ma_mono_expansion_mode_default;
 
     config.pitchResampling = ma_resampler_config_init(ma_format_f32, 0, 0, 0, ma_resample_algorithm_linear);
     config.pitchResampling.linear.lpfOrder = 0; /* <-- Need to disable low-pass filtering for pitch shifting for now because there's cases where the biquads are becoming unstable. Need to figure out a better fix for this. */
@@ -87226,42 +88334,57 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
         if (pEngine->pDevice == NULL && engineConfig.noDevice == MA_FALSE) {
             ma_device_config deviceConfig;
 
+            deviceConfig = engineConfig.deviceConfig;
+            deviceConfig.pUserData = pEngine;
+
+            if (deviceConfig.deviceType != ma_device_type_playback && deviceConfig.deviceType != ma_device_type_duplex) {
+                return MA_INVALID_ARGS;
+            }
+
+            if (deviceConfig.playback.format != ma_format_f32) {
+                MA_ASSERT(!"ma_engine_init(): Sample format must always be ma_format_f32.");
+                return MA_FORMAT_NOT_SUPPORTED;
+            }
+
+            if (deviceConfig.dataCallback != ma_engine_data_callback_internal) {
+                MA_ASSERT(!"ma_engine_init(): Internal device data callback cannot be changed from default.");
+                return MA_INVALID_ARGS;
+            }
+
+
+            if (engineConfig.channels != 0) {
+                deviceConfig.playback.channels = engineConfig.channels;
+            }
+
+            if (engineConfig.sampleRate != 0) {
+                deviceConfig.sampleRate = engineConfig.sampleRate;
+            }
+
+            if (engineConfig.processingSizeInFrames != 0) {
+                deviceConfig.periodSizeInFrames = engineConfig.processingSizeInFrames;
+            }
+            
+
             pEngine->pDevice = (ma_device*)ma_malloc(sizeof(*pEngine->pDevice), &pEngine->allocationCallbacks);
             if (pEngine->pDevice == NULL) {
                 return MA_OUT_OF_MEMORY;
             }
 
-            deviceConfig = ma_device_config_init(ma_device_type_playback);
-            deviceConfig.playback.pDeviceID        = engineConfig.pPlaybackDeviceID;
-            deviceConfig.playback.format           = ma_format_f32;
-            deviceConfig.playback.channels         = engineConfig.channels;
-            deviceConfig.sampleRate                = engineConfig.sampleRate;
-            deviceConfig.dataCallback              = (engineConfig.dataCallback != NULL) ? engineConfig.dataCallback : ma_engine_data_callback_internal;
-            deviceConfig.pUserData                 = pEngine;
-            deviceConfig.notificationCallback      = engineConfig.notificationCallback;
-            deviceConfig.periodSizeInFrames        = engineConfig.periodSizeInFrames;
-            deviceConfig.periodSizeInMilliseconds  = engineConfig.periodSizeInMilliseconds;
-            deviceConfig.noPreSilencedOutputBuffer = MA_TRUE;    /* We'll always be outputting to every frame in the callback so there's no need for a pre-silenced buffer. */
-            deviceConfig.noClip                    = engineConfig.noClip;
-
-            if (engineConfig.pContext == NULL) {
-                ma_context_config contextConfig = ma_context_config_init();
-                contextConfig.allocationCallbacks = pEngine->allocationCallbacks;
-                contextConfig.pLog = engineConfig.pLog;
+            if (engineConfig.deviceConfig.pContext == NULL) {
+                deviceConfig.contextConfig.allocationCallbacks = pEngine->allocationCallbacks;
+                deviceConfig.contextConfig.pLog = engineConfig.pLog;
 
                 /* If the engine config does not specify a log, use the resource manager's if we have one. */
                 #ifndef MA_NO_RESOURCE_MANAGER
                 {
-                    if (contextConfig.pLog == NULL && engineConfig.pResourceManager != NULL) {
-                        contextConfig.pLog = ma_resource_manager_get_log(engineConfig.pResourceManager);
+                    if (deviceConfig.contextConfig.pLog == NULL && engineConfig.pResourceManager != NULL) {
+                        deviceConfig.contextConfig.pLog = ma_resource_manager_get_log(engineConfig.pResourceManager);
                     }
                 }
                 #endif
-
-                result = ma_device_init_ex(NULL, 0, &contextConfig, &deviceConfig, pEngine->pDevice);
-            } else {
-                result = ma_device_init(engineConfig.pContext, &deviceConfig, pEngine->pDevice);
             }
+
+            result = ma_device_init(&deviceConfig, pEngine->pDevice);
 
             if (result != MA_SUCCESS) {
                 ma_free(pEngine->pDevice, &pEngine->allocationCallbacks);
@@ -87278,12 +88401,12 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
             engineConfig.sampleRate = pEngine->pDevice->sampleRate;
 
             /*
-            The processing size used by the engine is determined by engineConfig.periodSizeInFrames. We want
+            The processing size used by the engine is determined by engineConfig.processingSizeInFrames. We want
             to make this equal to what the device is using for it's period size. If we don't do that, it's
             possible that the node graph will split it's processing into multiple passes which can introduce
             glitching.
             */
-            engineConfig.periodSizeInFrames = ma_device_get_period_size_in_frames(pEngine->pDevice);
+            engineConfig.processingSizeInFrames = ma_device_get_period_size_in_frames(pEngine->pDevice);
         }
     }
     #endif
@@ -87312,7 +88435,7 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
 
     /* The engine is a node graph. This needs to be initialized after we have the device so we can determine the channel count. */
     nodeGraphConfig = ma_node_graph_config_init(engineConfig.channels);
-    nodeGraphConfig.processingSizeInFrames = engineConfig.periodSizeInFrames;
+    nodeGraphConfig.processingSizeInFrames = engineConfig.processingSizeInFrames;
     nodeGraphConfig.preMixStackSizeInBytes = engineConfig.preMixStackSizeInBytes;
 
     result = ma_node_graph_init(&nodeGraphConfig, &pEngine->allocationCallbacks, &pEngine->nodeGraph);
@@ -87385,22 +88508,10 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
                 goto on_error_2;
             }
 
-            resourceManagerConfig = ma_resource_manager_config_init();
+            resourceManagerConfig = engineConfig.resourceManagerConfig;
             resourceManagerConfig.pLog                = pEngine->pLog;    /* Always use the engine's log for internally-managed resource managers. */
-            resourceManagerConfig.decodedFormat       = ma_format_f32;
-            resourceManagerConfig.decodedChannels     = 0;  /* Leave the decoded channel count as 0 so we can get good spatialization. */
             resourceManagerConfig.decodedSampleRate   = ma_engine_get_sample_rate(pEngine);
             resourceManagerConfig.allocationCallbacks = ma_allocation_callbacks_init_copy(&pEngine->allocationCallbacks);
-            resourceManagerConfig.pVFS                = engineConfig.pResourceManagerVFS;
-            resourceManagerConfig.resampling          = engineConfig.resourceManagerResampling;
-
-            /* The Emscripten build cannot use threads unless it's targeting pthreads. */
-            #if defined(MA_EMSCRIPTEN) && !defined(__EMSCRIPTEN_PTHREADS__)
-            {
-                resourceManagerConfig.jobThreadCount = 0;
-                resourceManagerConfig.flags |= MA_RESOURCE_MANAGER_FLAG_NO_THREADING;
-            }
-            #endif
 
             result = ma_resource_manager_init(&resourceManagerConfig, pEngine->pResourceManager);
             if (result != MA_SUCCESS) {
@@ -87540,13 +88651,7 @@ MA_API ma_result ma_engine_read_pcm_frames(ma_engine* pEngine, void* pFramesOut,
 
     /* Apply clipping, unless it's been disabled. */
     if (pEngine->noClip == MA_FALSE) {
-        /* Don't bother clipping if the device is already doing it. */
-        #ifndef MA_NO_DEVICE_IO
-        if (pEngine->pDevice != NULL && pEngine->pDevice->noClip == MA_FALSE)
-        #endif
-        {
-            ma_clip_samples_f32((float*)pFramesOut, (const float*)pFramesOut, frameCount * ma_engine_get_channels(pEngine));
-        }
+        ma_clip_samples_f32((float*)pFramesOut, (const float*)pFramesOut, frameCount * ma_engine_get_channels(pEngine));
     }
 
     return MA_SUCCESS;

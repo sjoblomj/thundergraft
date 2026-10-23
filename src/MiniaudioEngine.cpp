@@ -403,11 +403,14 @@ namespace
 			if (output == MINIAUDIO_OUTPUT_NULL)
 			{
 				ma_device_backend_config backends[] = { ma_device_backend_config_init(ma_device_backend_null, NULL) };
-				if (ma_context_init(backends, 1, NULL, &m_context) != MA_SUCCESS)
+				ma_context_config contextConfig = ma_context_config_init();
+				contextConfig.pBackends = backends;
+				contextConfig.backendCount = 1;
+				if (ma_context_init(&contextConfig, &m_context) != MA_SUCCESS)
 					return false;
 
 				m_bContextInitialized = true;
-				engineConfig.pContext = &m_context;
+				engineConfig.deviceConfig.pContext = &m_context;
 			}
 			else if (output == MINIAUDIO_OUTPUT_MANUAL)
 			{
