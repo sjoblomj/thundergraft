@@ -44,10 +44,23 @@ namespace
 		return *lpEngine;
 	}
 
-	// Waits up to nTimeoutMs for a condition
+	// ThreadSanitizer slows the engine's threads down a lot, and much more when the machine is busy, so waits are longer under it
+#if defined(__SANITIZE_THREAD__)
+	const int WAIT_FACTOR = 6;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+	const int WAIT_FACTOR = 6;
+#else
+	const int WAIT_FACTOR = 1;
+#endif
+#else
+	const int WAIT_FACTOR = 1;
+#endif
+
+	// Waits up to nTimeoutMs (times WAIT_FACTOR) for a condition
 	bool WaitFor(std::function<bool()> condition, int nTimeoutMs = 5000)
 	{
-		std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(nTimeoutMs);
+		std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(nTimeoutMs * WAIT_FACTOR);
 		while (std::chrono::steady_clock::now() < end)
 		{
 			if (condition())
@@ -217,14 +230,23 @@ TEST_CASE("Several sounds can play at once")
 		}
 	}
 
-	CHECK(WaitFor([&]() {
+	bool bAllStarted = WaitFor([&]() {
 		for (std::unique_ptr<IAudioSound> &lpSound : sounds)
 		{
 			if (Cursor(*lpSound) == 0)
 				return false;
 		}
 		return true;
-	}));
+	});
+
+	// Says how many didn't start, to tell a slow engine from a stuck sound
+	int nNotStarted = 0;
+	for (std::unique_ptr<IAudioSound> &lpSound : sounds)
+	{
+		if (Cursor(*lpSound) == 0)
+			nNotStarted++;
+	}
+	CHECK_MESSAGE(bAllStarted, nNotStarted << " of " << sounds.size() << " sounds didn't start");
 }
 
 TEST_CASE("Sounds can be opened from several threads at once")
