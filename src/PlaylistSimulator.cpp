@@ -519,6 +519,8 @@ namespace
 				Line("  the base file has map_playlists = false, so the map's playlist file isn't used");
 				return;
 			}
+			// A map loaded here is one that is played, not just listed
+			m_player.ActivateMaps();
 
 			m_maps.push_back(std::make_pair(name, tag));
 		}
@@ -552,7 +554,7 @@ namespace
 				}
 			}
 
-			m_player.PopMap(m_maps[iMap].second);
+			m_player.CloseArchive(m_maps[iMap].second);
 			m_maps.erase(m_maps.begin() + iMap);
 			Update();
 		}
@@ -674,8 +676,10 @@ namespace
 		}
 
 		// IPlaylistFiles
-		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path)
+		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path, uintptr_t *lpArchive)
 		{
+			// Tracks are taken to come from the mod, never from a map
+			*lpArchive = 0;
 			if (m_missing.count(NormalizePlaylistName(path)))
 				return nullptr;
 

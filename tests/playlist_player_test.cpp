@@ -170,7 +170,9 @@ TEST_CASE_FIXTURE(Fixture, "Without a playlist file, streams play the game's fil
 
 	SUBCASE("They end when the file does")
 	{
-		Sound(1)->bPlaying = false;
+		std::shared_ptr<FakeSoundState> sound = Sound(1);
+		REQUIRE(sound);
+		sound->bPlaying = false;
 		CHECK_FALSE(player.IsPlaying(1));
 	}
 
@@ -955,6 +957,8 @@ TEST_CASE_FIXTURE(Fixture, "A map's playlist file is laid over the base")
 
 	REQUIRE(player.PushMap(0xA1, map));
 	CHECK(player.HasMap(0xA1));
+	// Until a stream starts
+	CHECK_FALSE(player.MapInUse(0xA1));
 
 	SUBCASE("Its top-level transitions come before the base's, even less specific ones")
 	{
@@ -980,15 +984,15 @@ TEST_CASE_FIXTURE(Fixture, "A map's playlist file is laid over the base")
 	{
 		REQUIRE(Start(2, NAME_TERRAN2));
 		std::shared_ptr<FakeSoundState> mapTrack = Sound(2);
-		CHECK(player.PopMap(0xA1));
+		CHECK(player.CloseArchive(0xA1));
 		CHECK(mapTrack->bDestroyed);
 		CHECK(Current() == "terranlist");
 		// The base's pass continues where it was before the map
 		CHECK(Playing(2) == Track("music\\t2.ogg"));
-		CHECK_FALSE(player.PopMap(0xA1));
+		CHECK_FALSE(player.CloseArchive(0xA1));
 	}
 
-	SUBCASE("Base tracks opened while it was loaded stop too, as Storm may have found them in the map")
+	SUBCASE("Base tracks opened while it was loaded keep playing")
 	{
 		REQUIRE(Start(2, "music\\zerg.wav"));
 		REQUIRE(Start(3, NAME_BOSS_CUE));
@@ -996,11 +1000,44 @@ TEST_CASE_FIXTURE(Fixture, "A map's playlist file is laid over the base")
 		Advance(3000);
 		std::shared_ptr<FakeSoundState> intro = Sound(2);
 		CHECK(intro->Contents() == Track("music\\boss_intro.ogg"));
-		player.PopMap(0xA1);
+		CHECK(player.CloseArchive(0xA1));
+		CHECK_FALSE(intro->bDestroyed);
+		CHECK(Current() == "boss");
+	}
+
+	SUBCASE("Base tracks Storm found in the map stop, as their files go with it")
+	{
+		files.archives["music\\boss_intro.ogg"] = 0xA1;
+		REQUIRE(Start(2, "music\\zerg.wav"));
+		REQUIRE(Start(3, NAME_BOSS_CUE));
+		Advance(3000);
+		std::shared_ptr<FakeSoundState> intro = Sound(2);
+		CHECK(intro->Contents() == Track("music\\boss_intro.ogg"));
+		player.CloseArchive(0xA1);
 		CHECK(intro->bDestroyed);
 		// music\zerg.wav has no transition in the base, so the game's file plays
 		CHECK(Playing(2) == Game(2));
 		CHECK(Current() == "");
+	}
+
+	SUBCASE("If where tracks were found isn't known, base tracks opened while it was loaded stop, as Storm may have found them in the map")
+	{
+		files.bArchivesUnknown = true;
+		REQUIRE(Start(2, "music\\zerg.wav"));
+		REQUIRE(Start(3, NAME_BOSS_CUE));
+		Advance(3000);
+		std::shared_ptr<FakeSoundState> intro = Sound(2);
+		player.CloseArchive(0xA1);
+		CHECK(intro->bDestroyed);
+		CHECK(Playing(2) == Game(2));
+
+		// Tracks opened once it was gone don't
+		REQUIRE(Start(4, NAME_BOSS_CUE));
+		Advance(3000);
+		std::shared_ptr<FakeSoundState> again = Sound(2);
+		CHECK(again->Contents() == Track("music\\boss_intro.ogg"));
+		player.CloseArchive(0xA1);
+		CHECK_FALSE(again->bDestroyed);
 	}
 
 	SUBCASE("Sounds that aren't music and played the map's tracks end")
@@ -1009,7 +1046,7 @@ TEST_CASE_FIXTURE(Fixture, "A map's playlist file is laid over the base")
 		REQUIRE(player.PushMap(0xA2, map2));
 		REQUIRE(Start(4, "sound\\a.wav"));
 		CHECK(player.IsPlaying(4));
-		player.PopMap(0xA2);
+		player.CloseArchive(0xA2);
 		CHECK_FALSE(player.IsPlaying(4));
 	}
 
@@ -1017,8 +1054,116 @@ TEST_CASE_FIXTURE(Fixture, "A map's playlist file is laid over the base")
 	{
 		REQUIRE(Start(5, "sound\\other.wav"));
 		std::shared_ptr<FakeSoundState> sound = Sound(5);
-		player.PopMap(0xA1);
+		player.CloseArchive(0xA1);
 		CHECK_FALSE(sound->bDestroyed);
+	}
+}
+
+TEST_CASE_FIXTURE(Fixture, "A map's file is only used once a stream starts while its archive is open")
+{
+	Load(EXAMPLE);
+	std::shared_ptr<const PlaylistFile> map = Parse("version = 1\n[on]\n'music\\title.wav' = 'maptitle'\n[playlist.maptitle]\ntracks = ['music\\maptitle.ogg']\n", true);
+	PlaylistDiagnostics diagnostics;
+	diagnostics.Warning("map.toml", 2, "something odd");
+
+	REQUIRE(Start(1, NAME_TITLE));
+	std::shared_ptr<FakeSoundState> title = Sound(1);
+	REQUIRE(player.PushMap(0xA1, map, diagnostics));
+
+	SUBCASE("A map that is only listed comes and goes without a trace")
+	{
+		CHECK(player.CloseArchive(0xA1));
+		CHECK_FALSE(player.HasMap(0xA1));
+		CHECK(log.warnings.empty());
+		CHECK_FALSE(log.Traced("map loaded"));
+		CHECK_FALSE(title->bDestroyed);
+
+		REQUIRE(Start(2, NAME_TITLE));
+		CHECK(Playing(2) == Track("music\\title.ogg"));
+		CHECK(log.warnings.empty());
+	}
+
+	SUBCASE("What plays already carries on, and the next stream uses it, and logs its problems")
+	{
+		EndTrack(1);
+		CHECK(Current() == "titlelist");
+		CHECK(log.warnings.empty());
+
+		REQUIRE(Start(2, NAME_TITLE));
+		CHECK(player.MapInUse(0xA1));
+		CHECK(Playing(2) == Track("music\\maptitle.ogg"));
+		REQUIRE(log.warnings.size() == 1);
+		CHECK(log.Warned("something odd"));
+		CHECK(log.Traced("map loaded: map.toml"));
+
+		// Once
+		REQUIRE(Start(3, NAME_TITLE));
+		CHECK(log.warnings.size() == 1);
+	}
+
+	SUBCASE("A file with errors is never used, but its problems are logged once the map is played")
+	{
+		REQUIRE(player.PushMap(0xA2, nullptr, diagnostics));
+		CHECK(player.HasMap(0xA2));
+		CHECK(log.warnings.empty());
+
+		REQUIRE(Start(2, NAME_TERRAN1));
+		CHECK_FALSE(player.HasMap(0xA2));
+		CHECK(log.warnings.size() == 2);
+	}
+
+	SUBCASE("A tag can't be used again while its file waits")
+	{
+		CHECK_FALSE(player.PushMap(0xA1, map));
+	}
+}
+
+TEST_CASE_FIXTURE(Fixture, "Tracks read from an archive stop when it closes, whether it has a playlist file or not")
+{
+	Load(EXAMPLE);
+	files.archives["music\\t1.ogg"] = 0xB0;
+	REQUIRE(Start(1, NAME_TERRAN1));
+	std::shared_ptr<FakeSoundState> t1 = Sound(1);
+	CHECK(t1->Contents() == Track("music\\t1.ogg"));
+
+	SUBCASE("Other archives closing leave it alone")
+	{
+		CHECK_FALSE(player.CloseArchive(0xB1));
+		CHECK_FALSE(t1->bDestroyed);
+	}
+
+	SUBCASE("The music starts again")
+	{
+		CHECK_FALSE(player.CloseArchive(0xB0));
+		CHECK(t1->bDestroyed);
+		CHECK(Current() == "terranlist");
+		CHECK(Playing(1) == Track("music\\t2.ogg"));
+	}
+
+	SUBCASE("A sound that isn't music ends")
+	{
+		files.archives["l.ogg"] = 0xB2;
+		player.SetBase(Parse("version = 1\n[on]\n'sound\\a.wav' = 'line'\n[playlist.line]\ntracks = ['l.ogg']\n"));
+		REQUIRE(Start(2, "sound\\a.wav"));
+		CHECK(player.IsPlaying(2));
+		player.CloseArchive(0xB2);
+		CHECK_FALSE(player.IsPlaying(2));
+	}
+
+	SUBCASE("So does what was about to play next")
+	{
+		player.End(1);
+		files.archives["a2.ogg"] = 0xB3;
+		player.SetBase(Parse("version = 1\n[on]\n'music\\*' = 'a'\n[playlist.a]\nplay = 'all'\ntracks = ['a1.ogg', 'a2.ogg']\n"));
+		REQUIRE(Start(2, NAME_TITLE));
+		std::shared_ptr<FakeSoundState> a1 = Sound(2);
+		NearEnd(2, 1000);
+		std::shared_ptr<FakeSoundState> prepared = engine.Last();
+		REQUIRE(prepared->Contents() == Track("a2.ogg"));
+		player.CloseArchive(0xB3);
+		CHECK(prepared->bDestroyed);
+		CHECK_FALSE(a1->bDestroyed);
+		CHECK(player.IsPlaying(2));
 	}
 }
 
@@ -1034,14 +1179,14 @@ TEST_CASE_FIXTURE(Fixture, "The most recently loaded map is the one in use")
 
 	SUBCASE("Removing an older one leaves the newer in use")
 	{
-		player.PopMap(1);
+		player.CloseArchive(1);
 		REQUIRE(Start(2, NAME_TITLE));
 		CHECK(Current() == "two");
 	}
 
 	SUBCASE("Removing the newer brings back the older")
 	{
-		player.PopMap(2);
+		player.CloseArchive(2);
 		REQUIRE(Start(2, NAME_TITLE));
 		CHECK(Current() == "one");
 	}
@@ -1074,9 +1219,10 @@ TEST_CASE_FIXTURE(Fixture, "Names a map uses that neither file defines are warne
 {
 	Load(EXAMPLE);
 	REQUIRE(player.PushMap(1, Parse("version = 1\n[on]\n'music\\title.wav' = 'nowhere'\n", true)));
-	CHECK(log.Warned("no playlist named \"nowhere\" in this file or in the base file"));
+	CHECK(log.warnings.empty());
 
 	REQUIRE(Start(1, NAME_TITLE));
+	CHECK(log.Warned("no playlist named \"nowhere\" in this file or in the base file"));
 	CHECK(Playing(1) == Game(1));
 	CHECK(log.Traced("there is no playlist named \"nowhere\", so the transition is ignored"));
 }
@@ -1092,8 +1238,8 @@ TEST_CASE_FIXTURE(Fixture, "A map's file works without a base file")
 {
 	CHECK_FALSE(player.HasPlaylists());
 	REQUIRE(player.PushMap(1, Parse("version = 1\n[on]\n'music\\*' = 'm'\n[playlist.m]\ntracks = ['m.ogg']\n", true)));
-	CHECK(player.HasPlaylists());
 	REQUIRE(Start(1, NAME_TITLE));
+	CHECK(player.HasPlaylists());
 	CHECK(Playing(1) == Track("m.ogg"));
 }
 

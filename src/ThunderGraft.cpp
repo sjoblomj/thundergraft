@@ -261,6 +261,7 @@ void CThunderGraftPlugin::StartAudioEngine()
 			storm.SFileGetFileSize = SFileGetFileSize;
 			storm.SFileSetFilePointer = SFileSetFilePointer;
 			storm.SFileOpenFileEx = SFileOpenFileEx;
+			storm.SFileGetFileArchive = SFileGetFileArchive;
 
 			m_log.Initialize(BUILD_STRING, GameDirectory().c_str());
 			if (m_bDebugLog)
@@ -358,12 +359,11 @@ void CThunderGraftPlugin::LoadMapPlaylist(IN HANDLE hMpq, IN LPCSTR lpszArchiveN
 		}
 
 		QDebugWriteEntry("LoadMapPlaylist : read %d, usable %d, %u problems", bRead, map != nullptr, (unsigned)diagnostics.All().size());
-		m_log.Write(diagnostics);
+		if (!map)
+			diagnostics.Error(label, 0, "the file has errors, so the map's playlists aren't used");
 
-		if (map)
-			m_player.PushMapPlaylist(hMpq, map);
-		else
-			m_log.Write("The map's playlist file has errors, so it isn't used.");
+		// The game opens every map it lists, so the player only uses the file, and logs its problems, if the map is played
+		m_player.PushMapPlaylist(hMpq, map, diagnostics);
 	}
 	catch (...)
 	{
@@ -724,7 +724,7 @@ BOOL WINAPI CThunderGraftPlugin::PatchOpenFileEx(OPTIONAL IN HANDLE hMpq, IN LPC
 	return bResult;
 }
 
-// Archives opened once the audio engine has started are maps (or the like), whose playlist files are laid over the base one while they are open. The ones open before then, including MPQDraft's, are where the base file is looked for.
+// Archives opened once the audio engine has started are maps (or the like), whose playlist files are laid over the base one while they are open, once the game starts a stream (see CPlaylistPlayer::PushMap). The ones open before then, including MPQDraft's, are where the base file is looked for.
 BOOL WINAPI CThunderGraftPlugin::PatchOpenArchive(IN LPCSTR lpszArchiveName, IN DWORD dwPriority, IN DWORD dwFlags, OUT HANDLE *lphMpq)
 {
 	if (!ThunderGraft.SFileOpenArchive)
@@ -752,11 +752,11 @@ BOOL WINAPI CThunderGraftPlugin::PatchCloseArchive(IN HANDLE hMpq)
 		return FALSE;
 	}
 
-	// The map's tracks have to stop before their archive goes
+	// Tracks read from the archive, and the map's playlists, have to stop before it goes
 	if (ThunderGraft.UsingPlayer())
 	{
 		DWORD dwError = GetLastError();
-		ThunderGraft.m_player.PopMapPlaylist(hMpq);
+		ThunderGraft.m_player.CloseArchive(hMpq);
 		SetLastError(dwError);
 	}
 

@@ -964,6 +964,35 @@ TEST_CASE("Engine: a map's playlist file is used while its archive is open")
 	CHECK(ReadDebugLog().find("map loaded: music\\playlist.toml in " + mapPath) != std::string::npos);
 }
 
+TEST_CASE("Engine: a map that is only opened and closed, as when the game lists it, isn't used")
+{
+	EnsureEngineStarted();
+
+	std::string tomlPath = TempPath("listed map playlist.toml");
+	WriteTextFile(tomlPath, "version = 1\n[on]\n'music\\title.wav' = 'listed_nowhere'\n");
+	std::string mapPath = TempPath("listed map.scm");
+	CreateArchive(mapPath, {
+		{ tomlPath, "music\\playlist.toml" },
+	});
+	DeleteFileA(tomlPath.c_str());
+
+	HANDLE hMap = NULL;
+	REQUIRE(SFileOpenArchive(mapPath.c_str(), 0, 0, &hMap));
+	CHECK(SFileCloseArchive(hMap));
+	DeleteFileA(mapPath.c_str());
+
+	HANDLE hMusic = OpenGameFile("music\\title.wav");
+	REQUIRE(SFileDdaBegin(hMusic, 0x10000, 0) == TRUE);
+	CHECK(Length(hMusic) == TITLE_TRACK_LENGTH);
+	EndAndClose(hMusic);
+
+	std::string log = ReadDebugLog();
+	INFO(log);
+	CHECK(log.find("map loaded: music\\playlist.toml in " + mapPath) == std::string::npos);
+	// Nor are its problems written
+	CHECK(log.find("listed_nowhere") == std::string::npos);
+}
+
 TEST_CASE("Engine: with debug logs on, every transition is written to the debug log")
 {
 	EnsureEngineStarted();

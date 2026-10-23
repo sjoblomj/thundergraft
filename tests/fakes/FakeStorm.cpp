@@ -10,11 +10,19 @@ namespace
 		std::string contents;
 		size_t nPosition = 0;
 		int nCloseCount = 0;
+		// NULL for a file that isn't from an archive
+		HANDLE hMpq = NULL;
+	};
+
+	struct NamedFile
+	{
+		std::string contents;
+		HANDLE hMpq;
 	};
 
 	std::mutex g_lock;
 	std::map<HANDLE, FakeFile> g_files;
-	std::map<std::string, std::string> g_namedFiles;
+	std::map<std::string, NamedFile> g_namedFiles;
 	std::vector<HANDLE> g_openedHandles;
 	UINT_PTR g_nNextHandle = 0x1000;
 
@@ -109,15 +117,30 @@ namespace
 	BOOL WINAPI FakeOpenFileEx(HANDLE, LPCSTR lpszName, DWORD, HANDLE *lphFile)
 	{
 		std::lock_guard<std::mutex> guard(g_lock);
-		std::map<std::string, std::string>::iterator itFile = g_namedFiles.find(lpszName);
+		std::map<std::string, NamedFile>::iterator itFile = g_namedFiles.find(lpszName);
 		if (itFile == g_namedFiles.end())
 		{
 			SetLastError(ERROR_FILE_NOT_FOUND);
 			return FALSE;
 		}
 
-		*lphFile = NewHandle(itFile->second);
+		*lphFile = NewHandle(itFile->second.contents);
+		g_files[*lphFile].hMpq = itFile->second.hMpq;
 		g_openedHandles.push_back(*lphFile);
+		return TRUE;
+	}
+
+	BOOL WINAPI FakeGetFileArchive(HANDLE hFile, HANDLE *lphMpq)
+	{
+		std::lock_guard<std::mutex> guard(g_lock);
+		FakeFile *lpFile = Find(hFile);
+		if (!lpFile)
+		{
+			SetLastError(ERROR_INVALID_HANDLE);
+			return FALSE;
+		}
+
+		*lphMpq = lpFile->hMpq;
 		return TRUE;
 	}
 }
@@ -138,10 +161,10 @@ namespace FakeStorm
 		return NewHandle(contents);
 	}
 
-	void AddNamedFile(const std::string &name, const std::string &contents)
+	void AddNamedFile(const std::string &name, const std::string &contents, HANDLE hMpq)
 	{
 		std::lock_guard<std::mutex> guard(g_lock);
-		g_namedFiles[name] = contents;
+		g_namedFiles[name] = NamedFile{contents, hMpq};
 	}
 
 	std::vector<HANDLE> OpenedHandles()
@@ -170,6 +193,7 @@ namespace FakeStorm
 		storm.SFileGetFileSize = FakeGetFileSize;
 		storm.SFileSetFilePointer = FakeSetFilePointer;
 		storm.SFileOpenFileEx = FakeOpenFileEx;
+		storm.SFileGetFileArchive = FakeGetFileArchive;
 		return storm;
 	}
 }

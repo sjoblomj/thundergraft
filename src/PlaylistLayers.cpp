@@ -88,13 +88,13 @@ const CPlaylistLayers::Layer *CPlaylistLayers::TopMap() const
 	return (!m_maps.empty() && MapsAllowed()) ? &m_maps.back() : NULL;
 }
 
-std::vector<uint64_t> CPlaylistLayers::MapIds() const
+std::vector<uintptr_t> CPlaylistLayers::MapTags() const
 {
-	std::vector<uint64_t> ids;
+	std::vector<uintptr_t> tags;
 	for (const Layer &layer : m_maps)
-		ids.push_back(layer.nId);
+		tags.push_back(layer.tag);
 
-	return ids;
+	return tags;
 }
 
 std::vector<std::shared_ptr<const PlaylistFile>> CPlaylistLayers::Effective() const

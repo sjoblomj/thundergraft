@@ -32,14 +32,17 @@
 #include "AudioEngine.h"
 #include "PlaylistLayers.h"
 
+// What IPlaylistFiles::OpenTrack gives for the archive of a track when it can't tell
+const uintptr_t PLAYLIST_ARCHIVE_UNKNOWN = ~(uintptr_t)0;
+
 // How the player gets at files
 class IPlaylistFiles
 {
 public:
 	virtual ~IPlaylistFiles() {}
 
-	// Opens a track a playlist names, through Storm, as the game opens its own files. NULL if it can't be found.
-	virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path) = 0;
+	// Opens a track a playlist names, through Storm, as the game opens its own files. NULL if it can't be found. *lpArchive is the archive Storm found it in, as CloseArchive's tag, 0 for a file on disk, or PLAYLIST_ARCHIVE_UNKNOWN.
+	virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path, uintptr_t *lpArchive) = 0;
 	// Reads the game's own file of a stream, through the handle the game passed. NULL on failure.
 	virtual std::unique_ptr<IAudioFile> OpenGameFile(PlaylistStreamId id) = 0;
 };
@@ -74,8 +77,10 @@ private:
 		// For messages: the track's path, or the game's name for its file
 		std::string path;
 		bool bLoop = false;
-		// The maps loaded when the track was opened. Storm may have found it in any of them, so it has to stop when any of them is unloaded.
-		std::vector<uint64_t> maps;
+		// The archive the track was read from (0 for the disk, and for the game's own files), as it has to stop when the archive closes
+		uintptr_t archive = 0;
+		// If the archive isn't known: the archives with maps' files that were open when the track was opened. Storm may have found it in any of them.
+		std::vector<uintptr_t> maps;
 		bool bStarted = false;
 		// Started by Update at nStartAt, after the sound before it has faded out
 		bool bDelayed = false;
@@ -174,6 +179,16 @@ private:
 	IPlaylistLog *m_lpLog;	// Not owned; may be NULL
 
 	CPlaylistLayers m_layers;
+
+	// A map's file waiting for the game to start a stream while its archive is open; see PushMap
+	struct PendingMap
+	{
+		uintptr_t tag;
+		// NULL if it has errors
+		std::shared_ptr<const PlaylistFile> file;
+		PlaylistDiagnostics diagnostics;
+	};
+	std::vector<PendingMap> m_pendingMaps;
 	CPlaylistRandom m_random;
 	uint64_t m_nNow;
 
@@ -248,14 +263,19 @@ public:
 	{ return m_layers.MapsAllowed(); }
 	bool HasPlaylists() const
 	{ return !m_layers.Empty(); }
-	// A map's file, laid over the others while its archive (the tag) is open. Warns about names neither it nor the base file defines. False if maps' files aren't allowed.
-	bool PushMap(uintptr_t tag, std::shared_ptr<const PlaylistFile> map);
-	// Stops every track opened while the map was loaded, and works out again what the music stream should play
-	bool PopMap(uintptr_t tag);
-	bool HasMap(uintptr_t tag) const
+	// A map's file, read when its archive (the tag) was opened, and the problems found reading it; map is NULL if it has errors. The game also opens maps it only lists or previews, so the file waits: it is laid over the others, and its problems are logged, once the game starts a stream while the archive is still open (see ActivateMaps). False if maps' files aren't allowed, or the tag is in use.
+	bool PushMap(uintptr_t tag, std::shared_ptr<const PlaylistFile> map, const PlaylistDiagnostics &diagnostics = PlaylistDiagnostics());
+	// Puts the maps' files that are waiting into use, and logs their problems, warning about names neither a map's file nor the base file defines. Begin does this first.
+	void ActivateMaps();
+	// The archive (the tag) is about to close. Every track read from it stops, and so does its map's file, if it has one in use, with what its playlists were playing; then the music stream works out again what to play. False if the archive had no map's file, in use or waiting.
+	bool CloseArchive(uintptr_t tag);
+	// Whether the archive has a map's file, in use or waiting
+	bool HasMap(uintptr_t tag) const;
+	// Whether the archive's map's file is in use
+	bool MapInUse(uintptr_t tag) const
 	{ return m_layers.HasMap(tag); }
 
-	// The game starts a stream. lpName is the file's name, if known; without one, the game's file plays with no transitions. nStartBytes is where in the game's file to start, in bytes of 16-bit PCM. Returns false if nothing could be played.
+	// The game starts a stream. Puts maps' files that are waiting into use first. lpName is the file's name, if known; without one, the game's file plays with no transitions. nStartBytes is where in the game's file to start, in bytes of 16-bit PCM. Returns false if nothing could be played.
 	bool Begin(PlaylistStreamId id, const std::string *lpName, bool bLoop, uint64_t nStartBytes, const PlaylistStreamSettings &settings);
 	// The game ends a stream. False if there is no such stream.
 	bool End(PlaylistStreamId id);

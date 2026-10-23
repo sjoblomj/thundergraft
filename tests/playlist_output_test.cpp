@@ -21,8 +21,11 @@ namespace
 	class FixtureFiles : public IPlaylistFiles
 	{
 	public:
-		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path)
-		{ return OpenFixture(path); }
+		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path, uintptr_t *lpArchive)
+		{
+			*lpArchive = 0;
+			return OpenFixture(path);
+		}
 
 		virtual std::unique_ptr<IAudioFile> OpenGameFile(PlaylistStreamId)
 		{ return OpenFixture("wav_u8_22050_mono.wav"); }

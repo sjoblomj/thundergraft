@@ -293,6 +293,8 @@ tracks = ['music\main.ogg']
 
 A StarCraft map is an MPQ archive, so it can contain a `music\playlist.toml` of its own, used while the map is loaded. When the map is unloaded, the base file applies again as if the map's file had never been there.
 
+The game also opens maps just to show them in the map list. So a map's file is only used from the first time the game starts music, or another streamed sound, while the map is loaded. Its problems are only reported then too, so browsing maps doesn't fill the log. Whatever is already playing when the map is loaded carries on until the game next starts something.
+
 A map maker can't know which mod the player uses, so a map's file adds to the base file rather than replacing it:
 
 - **Transitions:** the map's `[on]` comes after the current playlist's `on`, and before the base file's `[on]` (see [Which transition applies](#which-transition-applies)).
@@ -301,7 +303,7 @@ A map maker can't know which mod the player uses, so a map's file adds to the ba
 - **`music`:** the map's, if it has one, otherwise the base file's.
 - **`inherit = false`** in the map's file ignores the base file completely while the map is loaded, for maps that want full control.
 
-When the map is unloaded, every track that started while it was loaded stops at once, and the music carries on as if the game had just started it, under the base file. The base file's playlists continue where they were before the map.
+When the map is unloaded, its playlists stop at once, and so does every track that was read from the map, and the music carries on as if the game had just started it, under the base file. The base file's playlists continue where they were before the map.
 
 Maps come from strangers, so their playlist files have limits: at most 64 KB, 256 playlists, 2048 tracks and 1024 transitions, and tracks can only be files relative to the game, not anywhere on the computer. A player or mod that doesn't want maps to change the music can turn their playlist files off in the base file:
 

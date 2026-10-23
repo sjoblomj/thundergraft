@@ -96,6 +96,11 @@ namespace
 		*lphFile = MpqStorm::OpenFile(hMpq, lpszName);
 		return *lphFile != NULL;
 	}
+
+	BOOL WINAPI MpqGetFileArchive(HANDLE hFile, HANDLE *lphMpq)
+	{
+		return MpqStorm::GetFileArchive(hFile, lphMpq);
+	}
 }
 
 namespace MpqStorm
@@ -208,6 +213,7 @@ namespace MpqStorm
 		storm.SFileGetFileSize = MpqGetFileSize;
 		storm.SFileSetFilePointer = MpqSetFilePointer;
 		storm.SFileOpenFileEx = MpqOpenFileEx;
+		storm.SFileGetFileArchive = MpqGetFileArchive;
 		return storm;
 	}
 

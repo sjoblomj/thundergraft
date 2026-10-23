@@ -17,8 +17,8 @@ namespace FakeStorm
 	// Creates a file and returns its handle
 	HANDLE AddFile(const std::string &contents);
 
-	// Makes a file that SFileOpenFileEx can open by name; each open gives a handle of its own, with its own position
-	void AddNamedFile(const std::string &name, const std::string &contents);
+	// Makes a file that SFileOpenFileEx can open by name; each open gives a handle of its own, with its own position. SFileGetFileArchive says it is from hMpq, NULL meaning the disk.
+	void AddNamedFile(const std::string &name, const std::string &contents, HANDLE hMpq = NULL);
 	// The handles SFileOpenFileEx has given out, in order
 	std::vector<HANDLE> OpenedHandles();
 

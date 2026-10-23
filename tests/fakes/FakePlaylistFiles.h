@@ -7,6 +7,7 @@
 
 #include <string.h>
 #include <algorithm>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -58,12 +59,19 @@ public:
 	std::set<std::string> missing;
 	std::vector<std::string> openedTracks;
 	std::vector<PlaylistStreamId> openedGameFiles;
+	// The archives tracks are found in, as the playlist writes them; others are on disk
+	std::map<std::string, uintptr_t> archives;
+	// As without SFileGetFileArchive
+	bool bArchivesUnknown = false;
 
-	virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path)
+	virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path, uintptr_t *lpArchive)
 	{
 		openedTracks.push_back(path);
 		if (missing.count(path))
 			return nullptr;
+
+		std::map<std::string, uintptr_t>::const_iterator itArchive = archives.find(path);
+		*lpArchive = bArchivesUnknown ? PLAYLIST_ARCHIVE_UNKNOWN : itArchive != archives.end() ? itArchive->second : 0;
 		return std::unique_ptr<IAudioFile>(new TextAudioFile("track:" + path));
 	}
 

@@ -104,8 +104,9 @@ public:
 	// The playlist files; see CPlaylistPlayer
 	void SetBasePlaylist(IN std::shared_ptr<const PlaylistFile> base);
 	BOOL MapPlaylistsAllowed();
-	BOOL PushMapPlaylist(IN HANDLE hMpq, IN std::shared_ptr<const PlaylistFile> map);
-	BOOL PopMapPlaylist(IN HANDLE hMpq);
+	BOOL PushMapPlaylist(IN HANDLE hMpq, IN std::shared_ptr<const PlaylistFile> map, IN const PlaylistDiagnostics &diagnostics = PlaylistDiagnostics());
+	// Before the archive closes: stops what was read from it, and its map's file
+	BOOL CloseArchive(IN HANDLE hMpq);
 
 	// The DDA functions. Parameters and return values are as for the Storm functions of the same names.
 	BOOL Begin(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD dwBufferBytes, OPTIONAL IN DWORD dwStartPosBytes, OPTIONAL IN long nVolume, OPTIONAL IN long nPanPos, OPTIONAL IN IDirectSoundBuffer *lpSoundBuffer);

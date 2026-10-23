@@ -127,8 +127,8 @@ public:
 	bool HasMap(uintptr_t tag) const;
 	// The layer in use, or NULL
 	const Layer *TopMap() const;
-	// The IDs of every map that is loaded, in use or not
-	std::vector<uint64_t> MapIds() const;
+	// The tags of every map that is loaded, in use or not
+	std::vector<uintptr_t> MapTags() const;
 
 	// The files in use, in the order names are looked up in
 	std::vector<std::shared_ptr<const PlaylistFile>> Effective() const;

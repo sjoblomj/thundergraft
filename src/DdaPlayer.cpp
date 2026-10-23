@@ -193,8 +193,10 @@ namespace
 	public:
 		explicit CStormPlaylistFiles(const STORMFILEFUNCTIONS &storm) : m_storm(storm) {}
 
-		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path)
+		virtual std::unique_ptr<IAudioFile> OpenTrack(const std::string &path, uintptr_t *lpArchive)
 		{
+			*lpArchive = 0;
+
 			// The playlist file's reader only lets files on disk name absolute paths. Storm might not open those, so they're opened directly.
 			if (IsAbsolutePlaylistPath(path))
 				return CDiskAudioFile::Open(path);
@@ -205,6 +207,13 @@ namespace
 			HANDLE hFile = NULL;
 			if (!m_storm.SFileOpenFileEx(NULL, PlaylistPathForStorm(path).c_str(), 0, &hFile) || !hFile)
 				return nullptr;
+
+			// Storm searches every archive, and then the disk
+			HANDLE hMpq = NULL;
+			if (!m_storm.SFileGetFileArchive)
+				*lpArchive = PLAYLIST_ARCHIVE_UNKNOWN;
+			else if (m_storm.SFileGetFileArchive(hFile, &hMpq) && hMpq)
+				*lpArchive = (uintptr_t)hMpq;
 
 			std::unique_ptr<IAudioFile> lpFile(new (std::nothrow) CStormAudioFile(hFile, m_storm, true));
 			if (!lpFile)
@@ -277,16 +286,16 @@ BOOL CDdaPlayer::MapPlaylistsAllowed()
 	return m_playlist.MapPlaylistsAllowed();
 }
 
-BOOL CDdaPlayer::PushMapPlaylist(IN HANDLE hMpq, IN std::shared_ptr<const PlaylistFile> map)
+BOOL CDdaPlayer::PushMapPlaylist(IN HANDLE hMpq, IN std::shared_ptr<const PlaylistFile> map, IN const PlaylistDiagnostics &diagnostics)
 {
 	CLock lock(m_csLock);
-	return m_playlist.PushMap((uintptr_t)hMpq, map);
+	return m_playlist.PushMap((uintptr_t)hMpq, map, diagnostics);
 }
 
-BOOL CDdaPlayer::PopMapPlaylist(IN HANDLE hMpq)
+BOOL CDdaPlayer::CloseArchive(IN HANDLE hMpq)
 {
 	CLock lock(m_csLock);
-	return m_playlist.PopMap((uintptr_t)hMpq);
+	return m_playlist.CloseArchive((uintptr_t)hMpq);
 }
 
 BOOL CDdaPlayer::Begin(IN HANDLE hSFile, IN DWORD dwFlags, IN DWORD dwBufferBytes, OPTIONAL IN DWORD dwStartPosBytes, OPTIONAL IN long nVolume, OPTIONAL IN long nPanPos, OPTIONAL IN IDirectSoundBuffer *lpSoundBuffer)

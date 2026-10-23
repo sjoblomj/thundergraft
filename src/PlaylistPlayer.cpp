@@ -175,7 +175,8 @@ bool CPlaylistPlayer::OpenTrack(const Stream &stream, const PlaylistRef &playlis
 {
 	const PlaylistTrack &track = playlist.playlist->tracks[nTrack];
 
-	std::unique_ptr<IAudioFile> lpFile = m_lpFiles->OpenTrack(track.file);
+	uintptr_t archive = 0;
+	std::unique_ptr<IAudioFile> lpFile = m_lpFiles->OpenTrack(track.file, &archive);
 	if (!lpFile)
 	{
 		WarnTrack(playlist, nTrack, "can't be found");
@@ -194,7 +195,13 @@ bool CPlaylistPlayer::OpenTrack(const Stream &stream, const PlaylistRef &playlis
 	slot.nTrack = nTrack;
 	slot.path = track.file;
 	slot.bLoop = bLoop;
-	slot.maps = m_layers.MapIds();
+	slot.archive = archive;
+	if (archive == PLAYLIST_ARCHIVE_UNKNOWN)
+	{
+		slot.maps = m_layers.MapTags();
+		for (const PendingMap &map : m_pendingMaps)
+			slot.maps.push_back(map.tag);
+	}
 	ApplySettings(stream, slot);
 
 	return true;
@@ -692,51 +699,96 @@ void CPlaylistPlayer::SetBase(std::shared_ptr<const PlaylistFile> base)
 	m_nBackGeneration++;
 }
 
-bool CPlaylistPlayer::PushMap(uintptr_t tag, std::shared_ptr<const PlaylistFile> map)
+bool CPlaylistPlayer::PushMap(uintptr_t tag, std::shared_ptr<const PlaylistFile> map, const PlaylistDiagnostics &diagnostics)
 {
-	if (!m_layers.PushMap(tag, map))
+	if (!m_layers.MapsAllowed() || HasMap(tag))
 		return false;
 
-	PlaylistDiagnostics diagnostics;
-	CheckPlaylistCombination(*map, map->bInherit ? m_layers.Base().get() : NULL, diagnostics);
-	if (m_lpLog)
-	{
-		for (const PlaylistDiagnostic &diagnostic : diagnostics.All())
-			m_lpLog->Warning(diagnostic);
-	}
-
-	Trace("map loaded: " + map->label);
+	m_pendingMaps.push_back(PendingMap{tag, map, diagnostics});
 	return true;
 }
 
-bool CPlaylistPlayer::PopMap(uintptr_t tag)
+void CPlaylistPlayer::ActivateMaps()
 {
-	CPlaylistLayers::Layer removed;
-	if (!m_layers.RemoveMap(tag, &removed))
-		return false;
+	std::vector<PendingMap> pending;
+	pending.swap(m_pendingMaps);
 
-	Trace("map unloaded: " + removed.file->label);
-
-	auto openedOnMap = [&removed](const Slot &slot)
+	for (PendingMap &map : pending)
 	{
-		return slot.lpSound && std::find(slot.maps.begin(), slot.maps.end(), removed.nId) != slot.maps.end();
+		bool bLoaded = map.file && m_layers.PushMap(map.tag, map.file);
+		if (bLoaded)
+			CheckPlaylistCombination(*map.file, map.file->bInherit ? m_layers.Base().get() : NULL, map.diagnostics);
+
+		if (m_lpLog)
+		{
+			for (const PlaylistDiagnostic &diagnostic : map.diagnostics.All())
+				m_lpLog->Warning(diagnostic);
+		}
+
+		if (bLoaded)
+			Trace("map loaded: " + map.file->label);
+	}
+}
+
+bool CPlaylistPlayer::HasMap(uintptr_t tag) const
+{
+	for (const PendingMap &map : m_pendingMaps)
+	{
+		if (map.tag == tag)
+			return true;
+	}
+
+	return m_layers.HasMap(tag);
+}
+
+bool CPlaylistPlayer::CloseArchive(uintptr_t tag)
+{
+	// A map's file that never came into use goes without a word
+	bool bWaiting = false;
+	for (std::vector<PendingMap>::iterator itMap = m_pendingMaps.begin(); itMap != m_pendingMaps.end(); itMap++)
+	{
+		if (itMap->tag == tag)
+		{
+			m_pendingMaps.erase(itMap);
+			bWaiting = true;
+			break;
+		}
+	}
+
+	CPlaylistLayers::Layer removed;
+	bool bUnloaded = m_layers.RemoveMap(tag, &removed);
+	if (bUnloaded)
+		Trace("map unloaded: " + removed.file->label);
+
+	// Storm handles into the archive can't be trusted once it is closed
+	auto fromArchive = [tag](const Slot &slot)
+	{
+		if (!slot.lpSound)
+			return false;
+		if (slot.archive == PLAYLIST_ARCHIVE_UNKNOWN)
+			return std::find(slot.maps.begin(), slot.maps.end(), tag) != slot.maps.end();
+		return slot.archive == tag;
+	};
+	auto ofMap = [bUnloaded, &removed](const PlaylistRef &playlist)
+	{
+		return bUnloaded && playlist.file == removed.file;
 	};
 
-	// Storm handles into the map's archive can't be trusted once it is closed, so every track opened while it was loaded stops now, with no time for a fade
+	// What was read from the archive, or played the map's playlists, stops now, with no time for a fade
 	Stream *lpLostMusic = NULL;
 	for (std::pair<const PlaylistStreamId, std::unique_ptr<Stream>> &entry : m_streams)
 	{
 		Stream &stream = *entry.second;
 
-		if (stream.lpNext && (openedOnMap(stream.lpNext->slot) || stream.lpNext->playlist.file == removed.file || stream.lpNext->back.playlist.file == removed.file))
+		if (stream.lpNext && (fromArchive(stream.lpNext->slot) || ofMap(stream.lpNext->playlist) || ofMap(stream.lpNext->back.playlist)))
 			DropNext(stream);
 
-		stream.fading.erase(std::remove_if(stream.fading.begin(), stream.fading.end(), [&openedOnMap](const Fading &fading)
-			{ return openedOnMap(fading.slot); }), stream.fading.end());
+		stream.fading.erase(std::remove_if(stream.fading.begin(), stream.fading.end(), [&fromArchive](const Fading &fading)
+			{ return fromArchive(fading.slot); }), stream.fading.end());
 		if (stream.state == STREAM_STOPPING && stream.fading.empty())
 			stream.state = STREAM_ENDED;
 
-		if (openedOnMap(stream.primary) || (stream.state == STREAM_VISIT && stream.playlist.file == removed.file))
+		if (fromArchive(stream.primary) || (stream.state == STREAM_VISIT && ofMap(stream.playlist)))
 		{
 			stream.primary = Slot();
 			DropNext(stream);
@@ -746,28 +798,32 @@ bool CPlaylistPlayer::PopMap(uintptr_t tag)
 			else
 			{
 				EndStream(stream, 0);
-				Trace("  " + StreamName(stream) + " played the map's music, and ends");
+				Trace("  " + StreamName(stream) + " played from the archive or the map's playlists, and ends");
 			}
 		}
 	}
 
-	if (m_current.file == removed.file)
-		m_current.Reset();
-	if (m_back.bValid && m_back.playlist.file == removed.file)
+	if (bUnloaded)
 	{
-		m_back = BackPoint();
-		m_nBackGeneration++;
+		if (m_current.file == removed.file)
+			m_current.Reset();
+		if (m_back.bValid && m_back.playlist.file == removed.file)
+		{
+			m_back = BackPoint();
+			m_nBackGeneration++;
+		}
 	}
 
 	if (lpLostMusic)
 		Reevaluate(*lpLostMusic);
 
-	return true;
+	return bWaiting || bUnloaded;
 }
 
 bool CPlaylistPlayer::Begin(PlaylistStreamId id, const std::string *lpName, bool bLoop, uint64_t nStartBytes, const PlaylistStreamSettings &settings)
 {
 	End(id);
+	ActivateMaps();
 
 	std::unique_ptr<Stream> lpNewStream(new Stream);
 	Stream &stream = *lpNewStream;

@@ -78,6 +78,8 @@ struct STORMFILEFUNCTIONS
 	SFileSetFilePointerPtr SFileSetFilePointer;
 	// May be NULL, in which case no playlist track can be opened
 	SFileOpenFileExPtr SFileOpenFileEx;
+	// May be NULL, in which case which archive a track came from isn't known
+	SFileGetFileArchivePtr SFileGetFileArchive;
 };
 
 #endif // #ifndef STORM_H

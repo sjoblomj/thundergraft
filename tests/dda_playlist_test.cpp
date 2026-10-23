@@ -246,8 +246,8 @@ TEST_CASE_FIXTURE(PlaylistFixture, "A track with an absolute path, from a playli
 
 TEST_CASE_FIXTURE(PlaylistFixture, "A map's playlist file is laid over the base while its archive is open")
 {
-	FakeStorm::AddNamedFile("music\\map.ogg", "map track");
 	HANDLE hMpq = (HANDLE)0xA2C;
+	FakeStorm::AddNamedFile("music\\map.ogg", "map track", hMpq);
 	CHECK(player.MapPlaylistsAllowed());
 	REQUIRE(player.PushMapPlaylist(hMpq, Parse("version = 1\n[on]\n'music\\*' = 'map'\n[playlist.map]\ntracks = ['music\\map.ogg']\n", true)));
 
@@ -258,10 +258,10 @@ TEST_CASE_FIXTURE(PlaylistFixture, "A map's playlist file is laid over the base 
 	HANDLE hTrack = FakeStorm::OpenedHandles().back();
 
 	// The map's tracks stop, and their files are closed, before the archive is
-	CHECK(player.PopMapPlaylist(hMpq));
+	CHECK(player.CloseArchive(hMpq));
 	CHECK(sound->bDestroyed);
 	CHECK(FakeStorm::CloseCount(hTrack) == 1);
-	CHECK_FALSE(player.PopMapPlaylist(hMpq));
+	CHECK_FALSE(player.CloseArchive(hMpq));
 
 	// music\zerg1.wav has no transition in the base, so the game's file plays from the start
 	CHECK(engine.Last()->Contents() == "the game's own music");
@@ -273,4 +273,29 @@ TEST_CASE_FIXTURE(PlaylistFixture, "A map's playlist file is laid over the base 
 		CHECK_FALSE(player.MapPlaylistsAllowed());
 		CHECK_FALSE(player.PushMapPlaylist(hMpq, Parse("version = 1\n", true)));
 	}
+}
+
+TEST_CASE_FIXTURE(PlaylistFixture, "A track Storm found in an archive stops, and its file is closed, before the archive closes")
+{
+	HANDLE hMpq = (HANDLE)0xA2C;
+	FakeStorm::AddNamedFile("music\\t1.ogg", "terran track 1", hMpq);
+
+	HANDLE hGame = Open("music\\terran1.wav");
+	REQUIRE(Begin(hGame));
+	std::shared_ptr<FakeSoundState> sound = engine.Last();
+	CHECK(sound->Contents() == "terran track 1");
+	HANDLE hTrack = FakeStorm::OpenedHandles().back();
+
+	// Other archives can come and go
+	CHECK_FALSE(player.CloseArchive((HANDLE)0xB00));
+	CHECK_FALSE(sound->bDestroyed);
+
+	// The archive had no playlist file
+	CHECK_FALSE(player.CloseArchive(hMpq));
+	CHECK(sound->bDestroyed);
+	CHECK(FakeStorm::CloseCount(hTrack) == 1);
+	// The music starts again, from wherever Storm finds the track now
+	CHECK(engine.Last() != sound);
+	CHECK_FALSE(engine.Last()->bDestroyed);
+	CHECK(player.GetPos(hGame, NULL, NULL));
 }
