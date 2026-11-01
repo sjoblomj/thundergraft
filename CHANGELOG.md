@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2026-11-01
 
 - Replaced FMOD Ex with miniaudio, which is open source and built into the plugin: there is no longer a separate `fmodex.dll` to ship or find
 - Plays music on an output device of its own, at the music's own sampling rate, so the 44 khz workaround is gone
