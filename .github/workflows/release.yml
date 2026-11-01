@@ -24,7 +24,7 @@ jobs:
             ca-certificates git cmake make g++-mingw-w64-i686 binutils-mingw-w64-i686 \
             wine wine32:i386
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         run: |
