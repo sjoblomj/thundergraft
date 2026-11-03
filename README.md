@@ -1,6 +1,6 @@
 # ThunderGraft
 
-![ThunderGraft logo](src/TGLogo.bmp)
+![ThunderGraft logo](src/thundergraft.svg)
 
 **Better music for Diablo, Diablo II, StarCraft and Warcraft II: Battle.net Edition.**
 

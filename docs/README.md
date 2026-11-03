@@ -1,6 +1,6 @@
 # ThunderGraft
 
-![ThunderGraft logo](../src/TGLogo.bmp)
+![ThunderGraft logo](../src/thundergraft.svg)
 
 ## What It Is
 

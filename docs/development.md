@@ -98,7 +98,7 @@ Debug logs, turned on in the plugin's [settings](README.md#settings), write what
 | Path | What |
 |---|---|
 | `src/` | The plugin; the files not named after Windows things are platform-independent |
-| `tools/` | The `tgplaylist` tool |
+| `tools/` | The `tgplaylist` tool, and `export_logo.py`, which exports `src/thundergraft.svg` to the bitmap in the settings dialog; run it after changing the SVG (needs `rsvg-convert` and Pillow) |
 | `docs/` | The user readme, the playlist guide, the playlists' design, and this file |
 | `Common/` | Helpers that came from MPQDraft's source, since modified: the plugin interface, import table patching, debug logging |
 | `tests/` | Tests, fakes, the audio fixtures, and playlist files for the tool's tests |
